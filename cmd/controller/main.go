@@ -14,11 +14,11 @@ import (
 
 	"google.golang.org/grpc"
 
-	"ratelimit/internal/controller"
-	"ratelimit/internal/hub"
-	"ratelimit/internal/policy"
+	"github.com/aupv9/valve/internal/controller"
+	"github.com/aupv9/valve/internal/hub"
+	"github.com/aupv9/valve/internal/policy"
 
-	rlv1 "ratelimit/gen/ratelimit/v1"
+	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
 func main() {

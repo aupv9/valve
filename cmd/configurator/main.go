@@ -11,7 +11,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"ratelimit/internal/policy"
+	"github.com/aupv9/valve/internal/policy"
 )
 
 func main() {

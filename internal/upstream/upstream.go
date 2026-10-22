@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	rlv1 "ratelimit/gen/ratelimit/v1"
+	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
 type Config struct {

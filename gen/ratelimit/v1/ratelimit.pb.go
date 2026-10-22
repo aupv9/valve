@@ -283,7 +283,7 @@ const file_ratelimit_v1_ratelimit_proto_rawDesc = "" +
 	"\tbucket_id\x18\x01 \x01(\rR\bbucketId\x12\x19\n" +
 	"\bdrop_ppm\x18\x02 \x01(\rR\adropPpm2R\n" +
 	"\x10RateLimitControl\x12>\n" +
-	"\x04Sync\x12\x19.ratelimit.v1.UsageReport\x1a\x17.ratelimit.v1.Directive(\x010\x01B(Z&ratelimit/gen/ratelimit/v1;ratelimitv1b\x06proto3"
+	"\x04Sync\x12\x19.ratelimit.v1.UsageReport\x1a\x17.ratelimit.v1.Directive(\x010\x01B5Z3github.com/aupv9/valve/gen/ratelimit/v1;ratelimitv1b\x06proto3"
 
 var (
 	file_ratelimit_v1_ratelimit_proto_rawDescOnce sync.Once

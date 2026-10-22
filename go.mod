@@ -1,4 +1,4 @@
-module ratelimit
+module github.com/aupv9/valve
 
 go 1.27.1
 

@@ -20,11 +20,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"ratelimit/internal/filter"
-	"ratelimit/internal/policy"
-	"ratelimit/internal/upstream"
+	"github.com/aupv9/valve/internal/filter"
+	"github.com/aupv9/valve/internal/policy"
+	"github.com/aupv9/valve/internal/upstream"
 
-	rlv1 "ratelimit/gen/ratelimit/v1"
+	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
 func main() {

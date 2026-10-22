@@ -4,10 +4,10 @@ import (
 	"sync"
 	"time"
 
-	"ratelimit/internal/hub"
-	"ratelimit/internal/policy"
+	"github.com/aupv9/valve/internal/hub"
+	"github.com/aupv9/valve/internal/policy"
 
-	rlv1 "ratelimit/gen/ratelimit/v1"
+	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
 // Loop turns collected usage into directives once per cycle.

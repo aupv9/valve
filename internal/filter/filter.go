@@ -8,10 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ratelimit/internal/counter"
-	"ratelimit/internal/policy"
+	"github.com/aupv9/valve/internal/counter"
+	"github.com/aupv9/valve/internal/policy"
 
-	rlv1 "ratelimit/gen/ratelimit/v1"
+	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
 type Verdict int

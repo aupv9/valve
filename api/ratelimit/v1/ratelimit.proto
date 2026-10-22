@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package ratelimit.v1;
 
-option go_package = "ratelimit/gen/ratelimit/v1;ratelimitv1";
+option go_package = "github.com/aupv9/valve/gen/ratelimit/v1;ratelimitv1";
 
 // RateLimitControl is the same shape at every tier: sidecar -> aggregator,
 // aggregator -> regional controller, regional -> global controller.
