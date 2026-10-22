@@ -4,7 +4,7 @@ Cách build, chạy thử và cấu hình các thành phần hiện có. Thiết
 
 ## Yêu cầu
 
-- Go 1.24 trở lên (dự án dùng `go tool` cho plugin protobuf).
+- Go 1.27 trở lên (dự án dùng `go tool` cho plugin protobuf).
 - `buf`, chỉ khi sửa `.proto`. Nếu `buf` không nằm trong `PATH`: `make proto BUF=~/go/bin/buf`.
 
 ## Lệnh thường dùng
