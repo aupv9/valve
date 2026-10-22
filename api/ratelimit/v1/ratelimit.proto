@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package ratelimit.v1;
+
+option go_package = "ratelimit/gen/ratelimit/v1;ratelimitv1";
+
+// RateLimitControl is the same shape at every tier: sidecar -> aggregator,
+// aggregator -> regional controller, regional -> global controller.
+// Usage flows up, directives flow down, once per cycle (~1s).
+service RateLimitControl {
+  rpc Sync(stream UsageReport) returns (stream Directive);
+}
+
+message UsageReport {
+  string node_id = 1;
+  string zone = 2;
+  int64 window_end_unix_ms = 3;
+  repeated BucketUsage buckets = 4;
+}
+
+message BucketUsage {
+  uint32 bucket_id = 1;
+  uint64 offered = 2; // includes dropped requests (offered load)
+  uint64 dropped = 3;
+}
+
+message Directive {
+  uint64 config_version = 1;
+  int64 ttl_ms = 2; // on expiry the receiver fails open
+  repeated BucketDirective buckets = 3;
+}
+
+message BucketDirective {
+  uint32 bucket_id = 1;
+  uint32 drop_ppm = 2; // drop ratio in parts per million
+}

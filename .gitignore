@@ -1,0 +1,5 @@
+/bin/
+*.test
+*.out
+.idea/workspace.xml
+.idea/shelf/

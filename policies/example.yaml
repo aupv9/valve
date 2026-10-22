@@ -1,0 +1,18 @@
+buckets:
+  - name: checkout-from-web
+    match:
+      caller: web-gateway
+      callee: checkout
+      endpoint: CreateOrder      # empty = every endpoint
+    limit_rps: 20000
+    scope: global               # global | regional | zonal
+    priority: high              # used for tiered shedding
+    mode: enforce               # shadow | enforce (new buckets default to shadow)
+
+  - name: checkout-any
+    match:
+      callee: checkout
+    limit_rps: 50000
+    scope: regional
+    priority: medium
+    mode: shadow
