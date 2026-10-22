@@ -7,6 +7,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/aupv9/valve.svg)](https://pkg.go.dev/github.com/aupv9/valve)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/aupv9/valve)](go.mod)
 [![Go Report Card](https://goreportcard.com/badge/github.com/aupv9/valve)](https://goreportcard.com/report/github.com/aupv9/valve)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Status](https://img.shields.io/badge/status-experimental-orange)
 
 [How it works](#how-it-works) ·
@@ -169,3 +170,7 @@ Valve is **experimental**. The control loop is implemented end to end, but the m
 ## Acknowledgements
 
 The architecture is based on [Uber's Rate Limiting System](https://www.uber.com/blog/ubers-rate-limiting-system/) from Uber Engineering.
+
+## License
+
+Valve is released under the [MIT License](LICENSE).
