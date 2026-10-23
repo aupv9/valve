@@ -28,7 +28,9 @@ jobs:
       - name: Build
         run: go build ./cmd/...
       - name: Validate policies
-        run: go run ./cmd/configurator validate policies/*.yaml
+        run: |
+          go run ./cmd/configurator validate policies
+          go run ./cmd/configurator validate deploy/demo/policies
 
   lint:
     name: Lint
@@ -62,3 +64,18 @@ jobs:
             echo "::error::gen/ is out of date. Run 'make proto' and commit the result."
             exit 1
           }
+
+  docker:
+    name: Docker image and Envoy demo config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build -t valve:ci .
+      - name: Validate demo Envoy configs
+        run: |
+          for f in deploy/demo/checkout-envoy.yaml deploy/demo/checkout-app.yaml; do
+            docker run --rm -v "$PWD/$f:/envoy.yaml:ro" envoyproxy/envoy:v1.37-latest envoy --mode validate -c /envoy.yaml
+          done
+      - name: Validate demo policies
+        run: docker run --rm -v "$PWD/deploy/demo/policies:/p:ro" valve:ci configurator validate /p

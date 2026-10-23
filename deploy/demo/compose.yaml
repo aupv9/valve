@@ -1,0 +1,84 @@
+# Valve end to end with a real Envoy sidecar.
+#
+#   docker compose -f deploy/demo/compose.yaml up --build
+#
+# Host ports: 28080 configurator (kill switch, metrics), 29104 controller
+# metrics, 20000 checkout via the sidecar, 29901 Envoy admin, 29102 agent
+# metrics.
+#
+# web-gateway sends 300 RPS of CreateOrder to checkout against an enforced
+# 200 RPS limit: about a third gets 429. mobile sends 150 RPS against a
+# shadow 100 RPS limit: nothing is rejected, would-drops show in metrics.
+name: valve-demo
+
+x-valve: &valve
+  image: valve:dev
+  build:
+    context: ../..
+  restart: unless-stopped
+
+services:
+  configurator:
+    <<: *valve
+    command: [configurator, serve, -policy, /etc/valve/demo, -poll, 2s, -state, /tmp/kill-switch.json]
+    volumes:
+      - ./policies:/etc/valve/demo:ro
+    ports:
+      - "28080:8080" # kill switch API and metrics
+
+  controller:
+    <<: *valve
+    command: [controller, -xds, "configurator:18000", -region, demo]
+    ports:
+      - "29104:9104"
+
+  aggregator:
+    <<: *valve
+    command: [aggregator, -controller, "controller:9091", -zone, demo-a]
+
+  checkout-app:
+    image: envoyproxy/envoy:v1.37-latest
+    command: [envoy, -c, /etc/envoy/envoy.yaml, --log-level, warn]
+    volumes:
+      - ./checkout-app.yaml:/etc/envoy/envoy.yaml:ro
+
+  checkout-envoy:
+    image: envoyproxy/envoy:v1.37-latest
+    command: [envoy, -c, /etc/envoy/envoy.yaml, --log-level, warn]
+    volumes:
+      - ./checkout-envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "20000:10000" # checkout through the sidecar
+      - "29901:9901" # Envoy admin
+      - "29102:9102" # Valve agent metrics (shared network namespace)
+
+  checkout-agent:
+    <<: *valve
+    network_mode: service:checkout-envoy
+    command:
+      - agent
+      - -mode=envoy
+      - -service=checkout
+      - -zone=demo-a
+      - -aggregator=aggregator:9090
+      - -xds=configurator:18000
+      - -envoy-admin=http://127.0.0.1:9901
+      - -rtds-listen=127.0.0.1:18001
+
+  load-web:
+    <<: *valve
+    command:
+      - loadgen
+      - -label=web
+      - -url=http://checkout-envoy:10000/checkout.Orders/CreateOrder
+      - -rps=300
+      - -H=x-valve-caller:web-gateway
+
+  load-mobile:
+    <<: *valve
+    command:
+      - loadgen
+      - -label=mobile
+      - -url=http://checkout-envoy:10000/checkout.Orders/ListOrders
+      - -rps=150
+      - -H=x-valve-caller:mobile

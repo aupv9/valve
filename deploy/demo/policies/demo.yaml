@@ -1,0 +1,21 @@
+# Demo policies for the checkout service.
+buckets:
+  # Enforced: web-gateway may send 200 RPS of CreateOrder to checkout.
+  - name: checkout-web-create
+    match:
+      caller: web-gateway
+      callee: checkout
+      endpoint: CreateOrder
+    limit_rps: 200
+    scope: regional
+    priority: high
+    mode: enforce
+
+  # Shadow: mobile is measured against 100 RPS but never rejected.
+  - name: checkout-mobile
+    match:
+      caller: mobile
+      callee: checkout
+    limit_rps: 100
+    scope: regional
+    mode: shadow

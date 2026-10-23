@@ -55,6 +55,7 @@ func TestValidateRejects(t *testing.T) {
 		"duplicate":      "buckets: [{name: a, match: {callee: x}, limit_rps: 1}, {name: a, match: {callee: y}, limit_rps: 1}]",
 		"same match":     "buckets: [{name: a, match: {callee: x}, limit_rps: 1}, {name: b, match: {callee: x}, limit_rps: 1}]",
 		"unknown field":  "buckets: [{name: a, match: {callee: x}, limit: 1}]",
+		"bad name":       "buckets: [{name: a.b, match: {callee: x}, limit_rps: 1}]",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Parse(strings.NewReader(src)); err == nil {

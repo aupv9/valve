@@ -10,6 +10,7 @@ import (
 	"hash/fnv"
 	"io"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -124,9 +125,12 @@ func (pf *File) Validate() error {
 		bad := func(format string, a ...any) {
 			errs = append(errs, fmt.Errorf("bucket %d (%q): %s", i, b.Name, fmt.Sprintf(format, a...)))
 		}
-		if b.Name == "" {
+		switch {
+		case b.Name == "":
 			bad("name is required")
-		} else if names[b.Name] {
+		case !validName.MatchString(b.Name):
+			bad("name may only contain letters, digits, '-' and '_' (it becomes an Envoy stat and runtime key)")
+		case names[b.Name]:
 			bad("duplicate name")
 		}
 		names[b.Name] = true
@@ -162,6 +166,8 @@ func (pf *File) Validate() error {
 	}
 	return errors.Join(errs...)
 }
+
+var validName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
 
 func hashName(name string) uint32 {
 	h := fnv.New32a()

@@ -1,10 +1,10 @@
 // Command agent is the per-host sidecar agent: it keeps a stream to the zone
-// aggregator, reports usage and applies drop ratios.
+// aggregator, reports usage and applies drop ratios to a data plane.
 //
-// TODO(phase 1): read offered/dropped counters from Envoy admin stats and
-// push drop ratios to Envoy via RTDS so the fault filter aborts with 429.
-// Until then it runs the in-process filter with a synthetic load generator,
-// which is enough to exercise the full control loop locally.
+//	-mode envoy      drive an Envoy sidecar: serve abort ratios over RTDS and
+//	                 read counters from its admin API (phase 1 of the rollout)
+//	-mode inprocess  decide in the agent's own filter; with -load-rps it
+//	                 generates synthetic traffic to exercise the loop locally
 package main
 
 import (
@@ -12,13 +12,16 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/aupv9/valve/internal/admin"
+	"github.com/aupv9/valve/internal/envoy"
 	"github.com/aupv9/valve/internal/filter"
 	"github.com/aupv9/valve/internal/metrics"
 	"github.com/aupv9/valve/internal/policy"
@@ -29,6 +32,18 @@ import (
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
+// dataPlane is what the agent drives: the in-process filter or Envoy.
+type dataPlane interface {
+	SetTable(*policy.Table)
+	Version() uint64
+	SetKillSwitch(bool)
+	KillSwitch() bool
+	Apply(*rlv1.Directive, time.Time)
+	LastDirective() time.Time
+	ExpireStale(time.Time) int
+	Snapshot(nodeID, zone string, now time.Time) (*rlv1.UsageReport, []filter.TierUsage)
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(log); err != nil {
@@ -38,15 +53,19 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
+	mode := flag.String("mode", "inprocess", "envoy | inprocess")
 	aggAddr := flag.String("aggregator", "localhost:9090", "zone aggregator address")
 	policyPath := flag.String("policy", "policies", "policy file or directory (ignored with -xds)")
 	xdsTarget := flag.String("xds", "", "configurator xDS target; policies and the kill switch come from it")
 	nodeID := flag.String("node-id", hostname(), "this host's id")
 	zone := flag.String("zone", "local", "zone name")
 	interval := flag.Duration("interval", time.Second, "report cycle")
-	loadRPS := flag.Int("load-rps", 0, "synthetic requests/second (0 = off)")
-	loadReq := flag.String("load-request", "", "synthetic request as caller/callee/endpoint[/priority] (default: the first bucket's match)")
 	adminAddr := flag.String("admin", ":9102", "admin HTTP address for /metrics, /healthz, /readyz (empty = off)")
+	envoyAdmin := flag.String("envoy-admin", "http://127.0.0.1:9901", "Envoy admin API (-mode envoy)")
+	rtdsListen := flag.String("rtds-listen", "127.0.0.1:18001", "RTDS gRPC address Envoy subscribes to (-mode envoy)")
+	service := flag.String("service", "", "the callee the Envoy sidecar fronts (-mode envoy, required)")
+	loadRPS := flag.Int("load-rps", 0, "synthetic requests/second (-mode inprocess; 0 = off)")
+	loadReq := flag.String("load-request", "", "synthetic request as caller/callee/endpoint[/priority] (default: the first bucket's match)")
 	tlsCfg := tlsutil.RegisterFlags(flag.CommandLine)
 	flag.Parse()
 
@@ -57,13 +76,63 @@ func run(log *slog.Logger) error {
 	reg := admin.NewRegistry()
 	m := metrics.NewAgent(reg)
 
-	f := filter.New() // allows everything until a policy arrives
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var dp dataPlane
+	var inproc *filter.Filter
+	switch *mode {
+	case "inprocess":
+		inproc = filter.New() // allows everything until a policy arrives
+		dp = inproc
+	case "envoy":
+		if *service == "" {
+			return fmt.Errorf("-service is required with -mode envoy")
+		}
+		e := envoy.NewDataPlane(ctx, *envoyAdmin, *service, log)
+		// RTDS is plaintext on loopback: Envoy and the agent share the pod.
+		lis, err := net.Listen("tcp", *rtdsListen)
+		if err != nil {
+			return fmt.Errorf("rtds listen: %w", err)
+		}
+		g := grpc.NewServer()
+		e.Register(g)
+		go g.Serve(lis) //nolint:errcheck // stopped on exit
+		defer g.Stop()
+		dp = e
+	default:
+		return fmt.Errorf("unknown -mode %q", *mode)
+	}
+
 	pf := &policy.File{}
 	if *xdsTarget == "" {
 		if pf, err = policy.LoadPaths(*policyPath); err != nil {
 			return fmt.Errorf("load policy: %w", err)
 		}
-		f.SetTable(policy.Compile(pf, policy.Version(pf.ToProto())))
+		dp.SetTable(policy.Compile(pf, policy.Version(pf.ToProto())))
+	} else {
+		xconn, err := upstream.Dial(*xdsTarget, clientCreds)
+		if err != nil {
+			return fmt.Errorf("dial xds: %w", err)
+		}
+		defer xconn.Close()
+		xds.Watch(ctx, xconn, *nodeID, log.With("xds", *xdsTarget),
+			func(p *policy.File, version uint64) error {
+				dp.SetTable(policy.Compile(p, version))
+				return nil
+			},
+			func(ks *rlv1.KillSwitch) { dp.SetKillSwitch(ks.GetEnabled()) })
+	}
+
+	if *loadRPS > 0 {
+		if inproc == nil {
+			return fmt.Errorf("-load-rps needs -mode inprocess")
+		}
+		req, err := loadRequest(*loadReq, pf)
+		if err != nil {
+			return fmt.Errorf("synthetic load: %w", err)
+		}
+		go generateLoad(ctx, inproc, req, *loadRPS, log)
 	}
 
 	conn, err := upstream.Dial(*aggAddr, clientCreds)
@@ -72,45 +141,19 @@ func run(log *slog.Logger) error {
 	}
 	defer conn.Close()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if *xdsTarget != "" {
-		xconn, err := upstream.Dial(*xdsTarget, clientCreds)
-		if err != nil {
-			return fmt.Errorf("dial xds: %w", err)
-		}
-		defer xconn.Close()
-		xds.Watch(ctx, xconn, *nodeID, log.With("xds", *xdsTarget),
-			func(p *policy.File, version uint64) error {
-				f.SetTable(policy.Compile(p, version))
-				return nil
-			},
-			func(ks *rlv1.KillSwitch) { f.SetKillSwitch(ks.GetEnabled()) })
-	}
-
-	if *loadRPS > 0 {
-		req, err := loadRequest(*loadReq, pf)
-		if err != nil {
-			return fmt.Errorf("synthetic load: %w", err)
-		}
-		go generateLoad(ctx, f, req, *loadRPS, log)
-	}
-
 	admin.Serve(ctx, *adminAddr, admin.Mux(reg, nil), log)
-
-	log.Info("agent started", "aggregator", *aggAddr, "buckets", len(pf.Buckets), "xds", *xdsTarget, "mtls", tlsCfg.Enabled())
+	log.Info("agent started", "mode", *mode, "aggregator", *aggAddr, "xds", *xdsTarget, "service", *service, "mtls", tlsCfg.Enabled())
 	upstream.Run(ctx, conn, upstream.Config{
 		Interval: *interval,
 		Report: func() *rlv1.UsageReport {
 			now := time.Now()
-			r, detail := f.Snapshot(*nodeID, *zone, now)
-			m.Observe(detail, f.LastDirective(), now, f.KillSwitch(), f.Version())
+			r, detail := dp.Snapshot(*nodeID, *zone, now)
+			m.Observe(detail, dp.LastDirective(), now, dp.KillSwitch(), dp.Version())
 			return r
 		},
-		OnDirective: func(d *rlv1.Directive) { f.Apply(d, time.Now()) },
+		OnDirective: func(d *rlv1.Directive) { dp.Apply(d, time.Now()) },
 		OnTick: func(now time.Time) {
-			if n := f.ExpireStale(now); n > 0 {
+			if n := dp.ExpireStale(now); n > 0 {
 				m.FailOpen.Add(float64(n))
 				log.Warn("directive TTL expired, failing open", "buckets", n)
 			}
@@ -119,52 +162,6 @@ func run(log *slog.Logger) error {
 		Log:     log,
 	})
 	return nil
-}
-
-func loadRequest(spec string, pf *policy.File) (policy.Request, error) {
-	if spec == "" {
-		if len(pf.Buckets) == 0 {
-			return policy.Request{}, fmt.Errorf("-load-request is required when policies come from xDS")
-		}
-		m := pf.Buckets[0].Match
-		return policy.Request{Caller: m.Caller, Callee: m.Callee, Endpoint: m.Endpoint}, nil
-	}
-	parts := strings.Split(spec, "/")
-	if len(parts) < 3 || len(parts) > 4 {
-		return policy.Request{}, fmt.Errorf("-load-request %q: want caller/callee/endpoint[/priority]", spec)
-	}
-	req := policy.Request{Caller: parts[0], Callee: parts[1], Endpoint: parts[2]}
-	if len(parts) == 4 {
-		if req.Priority = policy.ParsePriority(parts[3]); req.Priority == "" {
-			return policy.Request{}, fmt.Errorf("-load-request: unknown priority %q", parts[3])
-		}
-	}
-	return req, nil
-}
-
-func generateLoad(ctx context.Context, f *filter.Filter, req policy.Request, rps int, log *slog.Logger) {
-	const batches = 100 // spread each second over 10ms batches
-	t := time.NewTicker(time.Second / batches)
-	defer t.Stop()
-	var allowed, rejected, tick int
-	for {
-		select {
-		case <-t.C:
-			for range rps / batches {
-				if f.Decide(req) == filter.Allow {
-					allowed++
-				} else {
-					rejected++
-				}
-			}
-			if tick++; tick%batches == 0 {
-				log.Info("synthetic load", "allowed", allowed, "rejected", rejected)
-				allowed, rejected = 0, 0
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 func hostname() string {
