@@ -23,6 +23,7 @@ import (
 	"github.com/aupv9/valve/internal/leader"
 	"github.com/aupv9/valve/internal/policy"
 	"github.com/aupv9/valve/internal/upstream"
+	"github.com/aupv9/valve/internal/xds"
 
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
@@ -37,7 +38,8 @@ func main() {
 
 func run(log *slog.Logger) error {
 	listen := flag.String("listen", ":9091", "gRPC listen address for aggregators (or regional controllers)")
-	policyPath := flag.String("policy", "policies", "policy file or directory")
+	policyPath := flag.String("policy", "policies", "policy file or directory (ignored with -xds)")
+	xdsTarget := flag.String("xds", "", "configurator xDS target; policies and the kill switch come from it")
 	interval := flag.Duration("interval", time.Second, "control cycle")
 	ttl := flag.Duration("ttl", 5*time.Second, "directive TTL downstream")
 	tier := flag.String("tier", "regional", "regional | global")
@@ -59,14 +61,8 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("bad sharding -shard %d -shards %d", *shard, *shards)
 	}
 
-	pf, err := policy.LoadPaths(*policyPath)
-	if err != nil {
-		return fmt.Errorf("load policy: %w", err)
-	}
-
 	h := hub.New(3 * *interval)
 	loop := &controller.Loop{Hub: h, Params: controller.DefaultParams, Interval: *interval, TTL: *ttl, Tier: t}
-	loop.SetTable(policy.Compile(pf, policy.Version(pf.ToProto())))
 	if *shards > 1 {
 		n, i := uint32(*shards), uint32(*shard)
 		loop.Owns = func(id uint32) bool { return id%n == i }
@@ -104,6 +100,26 @@ func run(log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if *xdsTarget == "" {
+		pf, err := policy.LoadPaths(*policyPath)
+		if err != nil {
+			return fmt.Errorf("load policy: %w", err)
+		}
+		loop.SetTable(policy.Compile(pf, policy.Version(pf.ToProto())))
+	} else {
+		conn, err := upstream.Dial(*xdsTarget, insecure.NewCredentials())
+		if err != nil {
+			return fmt.Errorf("dial xds: %w", err)
+		}
+		defer conn.Close()
+		xds.Watch(ctx, conn, *identity, log.With("xds", *xdsTarget),
+			func(pf *policy.File, version uint64) error {
+				loop.SetTable(policy.Compile(pf, version))
+				return nil
+			},
+			func(ks *rlv1.KillSwitch) { loop.SetKillSwitch(ks.GetEnabled()) })
+	}
 
 	go elector.Run(ctx, func(ctx context.Context) {
 		log.Info("leading", "tier", t, "shard", *shard, "identity", *identity)
@@ -149,7 +165,7 @@ func run(log *slog.Logger) error {
 	}()
 
 	log.Info("controller listening", "addr", lis.Addr().String(), "tier", t, "shard", *shard, "shards", *shards,
-		"buckets", len(pf.Buckets), "leader_elect", *elect)
+		"leader_elect", *elect, "xds", *xdsTarget)
 	if err := srv.Serve(lis); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}

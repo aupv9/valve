@@ -1,6 +1,5 @@
-// Command agent is the per-host sidecar agent (phase 1, "direction 2" in the
-// design doc): it keeps a stream to the zone aggregator, reports usage and
-// applies drop ratios.
+// Command agent is the per-host sidecar agent: it keeps a stream to the zone
+// aggregator, reports usage and applies drop ratios.
 //
 // TODO(phase 1): read offered/dropped counters from Envoy admin stats and
 // push drop ratios to Envoy via RTDS so the fault filter aborts with 429.
@@ -11,55 +10,85 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/aupv9/valve/internal/filter"
 	"github.com/aupv9/valve/internal/policy"
 	"github.com/aupv9/valve/internal/upstream"
+	"github.com/aupv9/valve/internal/xds"
 
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
 func main() {
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := run(log); err != nil {
+		log.Error("agent failed", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run(log *slog.Logger) error {
 	aggAddr := flag.String("aggregator", "localhost:9090", "zone aggregator address")
-	policyPath := flag.String("policy", "policies", "policy file or directory (later: delivered over xDS)")
+	policyPath := flag.String("policy", "policies", "policy file or directory (ignored with -xds)")
+	xdsTarget := flag.String("xds", "", "configurator xDS target; policies and the kill switch come from it")
 	nodeID := flag.String("node-id", hostname(), "this host's id")
 	zone := flag.String("zone", "local", "zone name")
 	interval := flag.Duration("interval", time.Second, "report cycle")
-	loadRPS := flag.Int("load-rps", 0, "synthetic requests/second against the first bucket (0 = off)")
+	loadRPS := flag.Int("load-rps", 0, "synthetic requests/second (0 = off)")
+	loadReq := flag.String("load-request", "", "synthetic request as caller/callee/endpoint[/priority] (default: the first bucket's match)")
 	flag.Parse()
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	pf, err := policy.LoadPaths(*policyPath)
-	if err != nil {
-		log.Error("load policy", "err", err)
-		os.Exit(1)
+	f := filter.New() // allows everything until a policy arrives
+	pf := &policy.File{}
+	if *xdsTarget == "" {
+		var err error
+		if pf, err = policy.LoadPaths(*policyPath); err != nil {
+			return fmt.Errorf("load policy: %w", err)
+		}
+		f.SetTable(policy.Compile(pf, policy.Version(pf.ToProto())))
 	}
-	f := filter.New()
-	f.SetTable(policy.Compile(pf, policy.Version(pf.ToProto())))
 
-	conn, err := grpc.NewClient(*aggAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := upstream.Dial(*aggAddr, insecure.NewCredentials())
 	if err != nil {
-		log.Error("dial aggregator", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("dial aggregator: %w", err)
 	}
 	defer conn.Close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if *loadRPS > 0 && len(pf.Buckets) > 0 {
-		go generateLoad(ctx, f, policy.Request{Caller: pf.Buckets[0].Match.Caller, Callee: pf.Buckets[0].Match.Callee, Endpoint: pf.Buckets[0].Match.Endpoint}, *loadRPS, log)
+	if *xdsTarget != "" {
+		xconn, err := upstream.Dial(*xdsTarget, insecure.NewCredentials())
+		if err != nil {
+			return fmt.Errorf("dial xds: %w", err)
+		}
+		defer xconn.Close()
+		xds.Watch(ctx, xconn, *nodeID, log.With("xds", *xdsTarget),
+			func(p *policy.File, version uint64) error {
+				f.SetTable(policy.Compile(p, version))
+				return nil
+			},
+			func(ks *rlv1.KillSwitch) { f.SetKillSwitch(ks.GetEnabled()) })
 	}
 
-	log.Info("agent started", "aggregator", *aggAddr, "buckets", len(pf.Buckets))
+	if *loadRPS > 0 {
+		req, err := loadRequest(*loadReq, pf)
+		if err != nil {
+			return fmt.Errorf("synthetic load: %w", err)
+		}
+		go generateLoad(ctx, f, req, *loadRPS, log)
+	}
+
+	log.Info("agent started", "aggregator", *aggAddr, "buckets", len(pf.Buckets), "xds", *xdsTarget)
 	upstream.Run(ctx, conn, upstream.Config{
 		Interval: *interval,
 		Report: func() *rlv1.UsageReport {
@@ -74,6 +103,28 @@ func main() {
 		},
 		Log: log,
 	})
+	return nil
+}
+
+func loadRequest(spec string, pf *policy.File) (policy.Request, error) {
+	if spec == "" {
+		if len(pf.Buckets) == 0 {
+			return policy.Request{}, fmt.Errorf("-load-request is required when policies come from xDS")
+		}
+		m := pf.Buckets[0].Match
+		return policy.Request{Caller: m.Caller, Callee: m.Callee, Endpoint: m.Endpoint}, nil
+	}
+	parts := strings.Split(spec, "/")
+	if len(parts) < 3 || len(parts) > 4 {
+		return policy.Request{}, fmt.Errorf("-load-request %q: want caller/callee/endpoint[/priority]", spec)
+	}
+	req := policy.Request{Caller: parts[0], Callee: parts[1], Endpoint: parts[2]}
+	if len(parts) == 4 {
+		if req.Priority = policy.ParsePriority(parts[3]); req.Priority == "" {
+			return policy.Request{}, fmt.Errorf("-load-request: unknown priority %q", parts[3])
+		}
+	}
+	return req, nil
 }
 
 func generateLoad(ctx context.Context, f *filter.Filter, req policy.Request, rps int, log *slog.Logger) {
