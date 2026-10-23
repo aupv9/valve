@@ -18,10 +18,11 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc/credentials/insecure"
-
+	"github.com/aupv9/valve/internal/admin"
 	"github.com/aupv9/valve/internal/filter"
+	"github.com/aupv9/valve/internal/metrics"
 	"github.com/aupv9/valve/internal/policy"
+	"github.com/aupv9/valve/internal/tlsutil"
 	"github.com/aupv9/valve/internal/upstream"
 	"github.com/aupv9/valve/internal/xds"
 
@@ -45,19 +46,27 @@ func run(log *slog.Logger) error {
 	interval := flag.Duration("interval", time.Second, "report cycle")
 	loadRPS := flag.Int("load-rps", 0, "synthetic requests/second (0 = off)")
 	loadReq := flag.String("load-request", "", "synthetic request as caller/callee/endpoint[/priority] (default: the first bucket's match)")
+	adminAddr := flag.String("admin", ":9102", "admin HTTP address for /metrics, /healthz, /readyz (empty = off)")
+	tlsCfg := tlsutil.RegisterFlags(flag.CommandLine)
 	flag.Parse()
+
+	clientCreds, err := tlsCfg.ClientCredentials()
+	if err != nil {
+		return err
+	}
+	reg := admin.NewRegistry()
+	m := metrics.NewAgent(reg)
 
 	f := filter.New() // allows everything until a policy arrives
 	pf := &policy.File{}
 	if *xdsTarget == "" {
-		var err error
 		if pf, err = policy.LoadPaths(*policyPath); err != nil {
 			return fmt.Errorf("load policy: %w", err)
 		}
 		f.SetTable(policy.Compile(pf, policy.Version(pf.ToProto())))
 	}
 
-	conn, err := upstream.Dial(*aggAddr, insecure.NewCredentials())
+	conn, err := upstream.Dial(*aggAddr, clientCreds)
 	if err != nil {
 		return fmt.Errorf("dial aggregator: %w", err)
 	}
@@ -67,7 +76,7 @@ func run(log *slog.Logger) error {
 	defer stop()
 
 	if *xdsTarget != "" {
-		xconn, err := upstream.Dial(*xdsTarget, insecure.NewCredentials())
+		xconn, err := upstream.Dial(*xdsTarget, clientCreds)
 		if err != nil {
 			return fmt.Errorf("dial xds: %w", err)
 		}
@@ -88,20 +97,26 @@ func run(log *slog.Logger) error {
 		go generateLoad(ctx, f, req, *loadRPS, log)
 	}
 
-	log.Info("agent started", "aggregator", *aggAddr, "buckets", len(pf.Buckets), "xds", *xdsTarget)
+	admin.Serve(ctx, *adminAddr, admin.Mux(reg, nil), log)
+
+	log.Info("agent started", "aggregator", *aggAddr, "buckets", len(pf.Buckets), "xds", *xdsTarget, "mtls", tlsCfg.Enabled())
 	upstream.Run(ctx, conn, upstream.Config{
 		Interval: *interval,
 		Report: func() *rlv1.UsageReport {
-			r, _ := f.Snapshot(*nodeID, *zone, time.Now())
+			now := time.Now()
+			r, detail := f.Snapshot(*nodeID, *zone, now)
+			m.Observe(detail, f.LastDirective(), now, f.KillSwitch(), f.Version())
 			return r
 		},
 		OnDirective: func(d *rlv1.Directive) { f.Apply(d, time.Now()) },
 		OnTick: func(now time.Time) {
 			if n := f.ExpireStale(now); n > 0 {
+				m.FailOpen.Add(float64(n))
 				log.Warn("directive TTL expired, failing open", "buckets", n)
 			}
 		},
-		Log: log,
+		OnState: func(up bool) { m.Connected.Set(metrics.Bool(up)) },
+		Log:     log,
 	})
 	return nil
 }

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"strconv"
 	"sync"
 	"time"
 
@@ -248,4 +249,16 @@ func (l *Loop) GlobalReport(nodeID, region string, start, end time.Time) *rlv1.U
 		b := table.Bucket(id)
 		return b != nil && b.Scope == policy.ScopeGlobal
 	})
+}
+
+// BucketName returns a bucket's name for metrics, or its id if unknown.
+func (l *Loop) BucketName(id uint32) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.table != nil {
+		if b := l.table.Bucket(id); b != nil {
+			return b.Name
+		}
+	}
+	return strconv.FormatUint(uint64(id), 16)
 }

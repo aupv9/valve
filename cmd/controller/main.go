@@ -12,16 +12,19 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/aupv9/valve/internal/admin"
 	"github.com/aupv9/valve/internal/controller"
 	"github.com/aupv9/valve/internal/hub"
 	"github.com/aupv9/valve/internal/leader"
+	"github.com/aupv9/valve/internal/metrics"
 	"github.com/aupv9/valve/internal/policy"
+	"github.com/aupv9/valve/internal/tlsutil"
 	"github.com/aupv9/valve/internal/upstream"
 	"github.com/aupv9/valve/internal/xds"
 
@@ -51,7 +54,21 @@ func run(log *slog.Logger) error {
 	leaseNS := flag.String("lease-namespace", envOr("POD_NAMESPACE", "default"), "namespace of the Lease")
 	leaseName := flag.String("lease-name", "", "Lease name (default valve-controller-<tier>-<shard>)")
 	identity := flag.String("identity", envOr("POD_NAME", hostname()), "this replica's identity for leader election")
+	adminAddr := flag.String("admin", ":9104", "admin HTTP address for /metrics, /healthz, /readyz (empty = off)")
+	tlsCfg := tlsutil.RegisterFlags(flag.CommandLine)
 	flag.Parse()
+
+	serverCreds, err := tlsCfg.ServerCredentials()
+	if err != nil {
+		return err
+	}
+	clientCreds, err := tlsCfg.ClientCredentials()
+	if err != nil {
+		return err
+	}
+	reg := admin.NewRegistry()
+	m := metrics.NewController(reg)
+	var leading atomic.Bool
 
 	t := controller.Tier(*tier)
 	if t != controller.TierRegional && t != controller.TierGlobal {
@@ -95,7 +112,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.Creds(serverCreds))
 	rlv1.RegisterRateLimitControlServer(srv, h)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -108,7 +125,7 @@ func run(log *slog.Logger) error {
 		}
 		loop.SetTable(policy.Compile(pf, policy.Version(pf.ToProto())))
 	} else {
-		conn, err := upstream.Dial(*xdsTarget, insecure.NewCredentials())
+		conn, err := upstream.Dial(*xdsTarget, clientCreds)
 		if err != nil {
 			return fmt.Errorf("dial xds: %w", err)
 		}
@@ -124,11 +141,17 @@ func run(log *slog.Logger) error {
 	go elector.Run(ctx, func(ctx context.Context) {
 		log.Info("leading", "tier", t, "shard", *shard, "identity", *identity)
 		h.SetServing(true)
-		defer h.SetServing(false)
+		leading.Store(true)
+		m.Leader.Set(1)
+		defer func() {
+			h.SetServing(false)
+			leading.Store(false)
+			m.Leader.Set(0)
+		}()
 		// Only the leader reports to the global tier: a standby would report
 		// zeros under the same node id and overwrite the leader's numbers.
 		for i, target := range globals {
-			conn, err := upstream.Dial(target, insecure.NewCredentials())
+			conn, err := upstream.Dial(target, clientCreds)
 			if err != nil {
 				log.Error("dial global controller", "target", target, "err", err)
 				continue
@@ -144,6 +167,7 @@ func run(log *slog.Logger) error {
 					return r
 				},
 				OnDirective: func(d *rlv1.Directive) { loop.Global.Set(i, d) },
+				OnState:     func(up bool) { m.GlobalConn.WithLabelValues(target).Set(metrics.Bool(up)) },
 				Log:         log.With("upstream", target),
 			})
 		}
@@ -152,8 +176,13 @@ func run(log *slog.Logger) error {
 		for {
 			select {
 			case <-tick.C:
+				start := time.Now()
 				res := loop.Tick()
-				log.Debug("tick", "peers", h.Peers(), "buckets", len(res.Shared))
+				m.Tick.Observe(time.Since(start).Seconds())
+				m.Peers.Set(float64(h.Peers()))
+				m.KillSwitch.Set(metrics.Bool(res.Kill))
+				m.SetConfigVersion(res.Version)
+				m.ObserveBuckets(res.Shared, res.ByZone, loop.BucketName)
 			case <-ctx.Done():
 				return
 			}
@@ -163,9 +192,11 @@ func run(log *slog.Logger) error {
 		<-ctx.Done()
 		srv.GracefulStop()
 	}()
+	// Ready only while leading, so a Kubernetes Service routes to the leader.
+	admin.Serve(ctx, *adminAddr, admin.Mux(reg, leading.Load), log)
 
 	log.Info("controller listening", "addr", lis.Addr().String(), "tier", t, "shard", *shard, "shards", *shards,
-		"leader_elect", *elect, "xds", *xdsTarget)
+		"leader_elect", *elect, "xds", *xdsTarget, "mtls", tlsCfg.Enabled())
 	if err := srv.Serve(lis); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}

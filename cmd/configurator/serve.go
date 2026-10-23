@@ -20,7 +20,10 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/aupv9/valve/internal/admin"
+	"github.com/aupv9/valve/internal/metrics"
 	"github.com/aupv9/valve/internal/policy"
+	"github.com/aupv9/valve/internal/tlsutil"
 	"github.com/aupv9/valve/internal/xds"
 
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
@@ -30,23 +33,30 @@ func serve(args []string, log *slog.Logger) error {
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
 	policyPath := flags.String("policy", "policies", "policy file or directory (a Git checkout)")
 	listen := flags.String("listen", ":18000", "xDS (ADS) gRPC listen address")
-	admin := flags.String("admin", ":8080", "admin HTTP address (kill switch)")
+	adminAddr := flags.String("admin", ":8080", "admin HTTP address (kill switch)")
 	adminToken := flags.String("admin-token", os.Getenv("VALVE_ADMIN_TOKEN"), "bearer token required to change the kill switch (empty = no auth)")
 	poll := flags.Duration("poll", 5*time.Second, "how often to re-read policies")
 	state := flags.String("state", "", "file that persists the kill switch across restarts (empty = in memory)")
+	tlsCfg := tlsutil.RegisterFlags(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	creds, err := tlsCfg.ServerCredentials()
+	if err != nil {
+		return err
+	}
+	reg := admin.NewRegistry()
+	m := metrics.NewConfigurator(reg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	srv := xds.NewServer(ctx)
-	ks := &killSwitch{srv: srv, path: *state, log: log}
+	ks := &killSwitch{srv: srv, path: *state, log: log, metrics: m}
 	if err := ks.load(); err != nil {
 		return err
 	}
-	w := &watcher{srv: srv, paths: []string{*policyPath}, log: log}
+	w := &watcher{srv: srv, paths: []string{*policyPath}, log: log, metrics: m}
 	if err := w.reload(); err != nil {
 		return fmt.Errorf("initial policy load: %w", err) // never start without a valid set
 	}
@@ -55,14 +65,13 @@ func serve(args []string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	g := grpc.NewServer(xds.ServerOptions()...)
+	g := grpc.NewServer(append(xds.ServerOptions(), grpc.Creds(creds))...)
 	srv.Register(g)
 
-	mux := http.NewServeMux()
+	mux := admin.Mux(reg, nil)
 	mux.HandleFunc("GET /kill-switch", ks.get)
 	mux.Handle("PUT /kill-switch", requireToken(*adminToken, http.HandlerFunc(ks.put)))
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	hs := &http.Server{Addr: *admin, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	hs := &http.Server{Addr: *adminAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
 	go w.run(ctx, *poll)
 	go func() {
@@ -79,8 +88,8 @@ func serve(args []string, log *slog.Logger) error {
 		hs.Shutdown(sctx) //nolint:errcheck // best effort on exit
 	}()
 
-	log.Info("configurator serving", "xds", lis.Addr().String(), "admin", *admin, "policy", *policyPath,
-		"admin_auth", *adminToken != "")
+	log.Info("configurator serving", "xds", lis.Addr().String(), "admin", *adminAddr, "policy", *policyPath,
+		"admin_auth", *adminToken != "", "mtls", tlsCfg.Enabled())
 	return g.Serve(lis)
 }
 
@@ -90,12 +99,14 @@ type watcher struct {
 	srv     *xds.Server
 	paths   []string
 	log     *slog.Logger
+	metrics *metrics.Configurator
 	version string
 }
 
 func (w *watcher) reload() error {
 	pf, err := policy.LoadPaths(w.paths...)
 	if err != nil {
+		w.metrics.ReloadErrors.Inc()
 		return err
 	}
 	ps := pf.ToProto()
@@ -106,6 +117,8 @@ func (w *watcher) reload() error {
 		return err
 	}
 	w.log.Info("published policies", "version", ps.GetVersion(), "buckets", len(ps.GetBuckets()), "previous", w.version)
+	w.metrics.Published.Inc()
+	w.metrics.SetConfigVersion(policy.Version(ps))
 	w.version = ps.GetVersion()
 	return nil
 }
@@ -127,9 +140,10 @@ func (w *watcher) run(ctx context.Context, every time.Duration) {
 
 // killSwitch holds the kill switch state and persists it.
 type killSwitch struct {
-	srv  *xds.Server
-	path string
-	log  *slog.Logger
+	srv     *xds.Server
+	path    string
+	log     *slog.Logger
+	metrics *metrics.Configurator
 
 	mu  sync.Mutex
 	cur *rlv1.KillSwitch
@@ -181,6 +195,7 @@ func (k *killSwitch) set(j killSwitchJSON, persist bool) error {
 		return err
 	}
 	k.cur = ks
+	k.metrics.KillSwitch.Set(metrics.Bool(ks.GetEnabled()))
 	k.log.Warn("kill switch", "enabled", j.Enabled, "reason", j.Reason)
 	return nil
 }
