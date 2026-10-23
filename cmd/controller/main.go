@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -22,17 +23,23 @@ import (
 )
 
 func main() {
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := run(log); err != nil {
+		log.Error("controller failed", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run(log *slog.Logger) error {
 	listen := flag.String("listen", ":9091", "gRPC listen address for aggregators")
 	policyPath := flag.String("policy", "policies/example.yaml", "policy file")
 	interval := flag.Duration("interval", time.Second, "control cycle")
 	ttl := flag.Duration("ttl", 5*time.Second, "directive TTL downstream")
 	flag.Parse()
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	pf, err := policy.Load(*policyPath)
 	if err != nil {
-		log.Error("load policy", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("load policy: %w", err)
 	}
 
 	h := hub.New(3 * *interval)
@@ -41,8 +48,7 @@ func main() {
 
 	lis, err := net.Listen("tcp", *listen)
 	if err != nil {
-		log.Error("listen", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("listen: %w", err)
 	}
 	srv := grpc.NewServer()
 	rlv1.RegisterRateLimitControlServer(srv, h)
@@ -66,7 +72,7 @@ func main() {
 
 	log.Info("controller listening", "addr", lis.Addr().String(), "buckets", len(pf.Buckets))
 	if err := srv.Serve(lis); err != nil {
-		log.Error("serve", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("serve: %w", err)
 	}
+	return nil
 }

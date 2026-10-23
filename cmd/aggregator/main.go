@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -22,19 +23,25 @@ import (
 )
 
 func main() {
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := run(log); err != nil {
+		log.Error("aggregator failed", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run(log *slog.Logger) error {
 	listen := flag.String("listen", ":9090", "gRPC listen address for sidecars")
 	controllerAddr := flag.String("controller", "localhost:9091", "regional controller address")
 	nodeID := flag.String("node-id", hostname(), "this aggregator's id")
 	zone := flag.String("zone", "local", "zone name")
 	interval := flag.Duration("interval", time.Second, "report cycle")
 	flag.Parse()
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	h := hub.New(3 * *interval)
 	lis, err := net.Listen("tcp", *listen)
 	if err != nil {
-		log.Error("listen", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("listen: %w", err)
 	}
 	srv := grpc.NewServer()
 	rlv1.RegisterRateLimitControlServer(srv, h)
@@ -42,8 +49,7 @@ func main() {
 	// TODO: mTLS between tiers.
 	conn, err := grpc.NewClient(*controllerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Error("dial controller", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("dial controller: %w", err)
 	}
 	defer conn.Close()
 
@@ -68,9 +74,9 @@ func main() {
 
 	log.Info("aggregator listening", "addr", lis.Addr().String(), "controller", *controllerAddr)
 	if err := srv.Serve(lis); err != nil {
-		log.Error("serve", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("serve: %w", err)
 	}
+	return nil
 }
 
 func hostname() string {

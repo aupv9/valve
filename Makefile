@@ -1,4 +1,5 @@
 BUF ?= buf
+GOLANGCI_LINT ?= golangci-lint
 
 .PHONY: all build test bench lint proto validate run-local clean
 
@@ -15,6 +16,7 @@ bench:
 
 lint:
 	go vet ./...
+	$(GOLANGCI_LINT) run ./...
 	$(BUF) lint
 
 proto:

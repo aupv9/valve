@@ -4,6 +4,7 @@
 
 **Global rate limiting for service meshes, with no network call on the request path.**
 
+[![CI](https://github.com/aupv9/valve/actions/workflows/ci.yml/badge.svg)](https://github.com/aupv9/valve/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/aupv9/valve.svg)](https://pkg.go.dev/github.com/aupv9/valve)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/aupv9/valve)](go.mod)
 [![Go Report Card](https://goreportcard.com/badge/github.com/aupv9/valve)](https://goreportcard.com/report/github.com/aupv9/valve)
@@ -82,7 +83,7 @@ To see fail-open, stop the controller or the aggregator. When the 5-second direc
 | --- | --- |
 | `make test` | Run unit tests with the race detector |
 | `make bench` | Benchmark the `Decide()` hot path |
-| `make lint` | Run `go vet` and `buf lint` |
+| `make lint` | Run `go vet`, `golangci-lint` and `buf lint` |
 | `make proto` | Regenerate `gen/` from `api/` |
 | `make validate` | Validate every file in `policies/` |
 | `make build` | Build all binaries into `bin/` |

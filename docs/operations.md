@@ -13,7 +13,7 @@ Cách build, chạy thử và cấu hình các thành phần hiện có. Thiết
 | --- | --- |
 | `make test` | Unit test với `-race` |
 | `make bench` | Benchmark hot path `Decide()` |
-| `make lint` | `go vet` và `buf lint` |
+| `make lint` | `go vet`, `golangci-lint` và `buf lint` |
 | `make proto` | Sinh lại `gen/` từ `api/` |
 | `make validate` | Kiểm tra mọi file trong `policies/` |
 | `make build` | Build bốn binary vào `bin/` |

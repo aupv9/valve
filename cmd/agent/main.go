@@ -56,8 +56,7 @@ func main() {
 	defer stop()
 
 	if *loadRPS > 0 && len(pf.Buckets) > 0 {
-		m := pf.Buckets[0].Match
-		go generateLoad(ctx, f, policy.Request{Caller: m.Caller, Callee: m.Callee, Endpoint: m.Endpoint}, *loadRPS, log)
+		go generateLoad(ctx, f, policy.Request(pf.Buckets[0].Match), *loadRPS, log)
 	}
 
 	log.Info("agent started", "aggregator", *aggAddr, "buckets", len(pf.Buckets))
