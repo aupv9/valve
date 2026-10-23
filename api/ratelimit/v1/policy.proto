@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package ratelimit.v1;
+
+import "ratelimit/v1/ratelimit.proto";
+
+option go_package = "github.com/aupv9/valve/gen/ratelimit/v1;ratelimitv1";
+
+// PolicySet is the compiled policy the configurator serves over xDS
+// (type URL type.googleapis.com/ratelimit.v1.PolicySet, resource name "policies").
+message PolicySet {
+  // Content hash of the policy files this set was compiled from.
+  string version = 1;
+  repeated Bucket buckets = 2;
+}
+
+enum Scope {
+  SCOPE_UNSPECIFIED = 0;
+  SCOPE_GLOBAL = 1;
+  SCOPE_REGIONAL = 2;
+  SCOPE_ZONAL = 3;
+}
+
+enum Mode {
+  MODE_UNSPECIFIED = 0;
+  MODE_SHADOW = 1;
+  MODE_ENFORCE = 2;
+}
+
+message Bucket {
+  string name = 1;
+  string caller = 2;
+  string callee = 3;
+  string endpoint = 4;
+  uint64 limit_rps = 5;
+  Scope scope = 6;
+  Priority priority = 7;
+  Mode mode = 8;
+}
+
+// KillSwitch is served on its own xDS resource type
+// (type.googleapis.com/ratelimit.v1.KillSwitch, resource name "kill-switch")
+// so flipping it never waits behind a policy update.
+message KillSwitch {
+  bool enabled = 1;
+  string reason = 2;
+  int64 updated_unix_ms = 3;
+}

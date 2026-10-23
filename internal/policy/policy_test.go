@@ -31,10 +31,10 @@ buckets:
 		req  Request
 		want string
 	}{
-		{Request{"web", "checkout", "CreateOrder"}, "web-create-order"},
-		{Request{"web", "checkout", "GetOrder"}, "any-to-checkout"},
-		{Request{"mobile", "checkout", "CreateOrder"}, "any-to-checkout"},
-		{Request{"web", "payments", "Pay"}, ""},
+		{Request{Caller: "web", Callee: "checkout", Endpoint: "CreateOrder"}, "web-create-order"},
+		{Request{Caller: "web", Callee: "checkout", Endpoint: "GetOrder"}, "any-to-checkout"},
+		{Request{Caller: "mobile", Callee: "checkout", Endpoint: "CreateOrder"}, "any-to-checkout"},
+		{Request{Caller: "web", Callee: "payments", Endpoint: "Pay"}, ""},
 	}
 	for _, tt := range tests {
 		got := ""

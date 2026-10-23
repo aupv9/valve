@@ -83,14 +83,22 @@ func Load(path string) (*File, error) {
 
 // Parse decodes YAML strictly (unknown fields are errors) and validates it.
 func Parse(r io.Reader) (*File, error) {
-	dec := yaml.NewDecoder(r)
-	dec.KnownFields(true)
-	var pf File
-	if err := dec.Decode(&pf); err != nil {
-		return nil, fmt.Errorf("decode policy: %w", err)
+	pf, err := decode(r)
+	if err != nil {
+		return nil, err
 	}
 	if err := pf.Validate(); err != nil {
 		return nil, err
+	}
+	return pf, nil
+}
+
+func decode(r io.Reader) (*File, error) {
+	dec := yaml.NewDecoder(r)
+	dec.KnownFields(true)
+	var pf File
+	if err := dec.Decode(&pf); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("decode policy: %w", err)
 	}
 	return &pf, nil
 }

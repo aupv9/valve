@@ -29,7 +29,7 @@ import (
 
 func main() {
 	aggAddr := flag.String("aggregator", "localhost:9090", "zone aggregator address")
-	policyPath := flag.String("policy", "policies/example.yaml", "policy file (later: delivered over xDS)")
+	policyPath := flag.String("policy", "policies", "policy file or directory (later: delivered over xDS)")
 	nodeID := flag.String("node-id", hostname(), "this host's id")
 	zone := flag.String("zone", "local", "zone name")
 	interval := flag.Duration("interval", time.Second, "report cycle")
@@ -37,13 +37,13 @@ func main() {
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	pf, err := policy.Load(*policyPath)
+	pf, err := policy.LoadPaths(*policyPath)
 	if err != nil {
 		log.Error("load policy", "err", err)
 		os.Exit(1)
 	}
 	f := filter.New()
-	f.SetTable(policy.Compile(pf, 1))
+	f.SetTable(policy.Compile(pf, policy.Version(pf.ToProto())))
 
 	conn, err := grpc.NewClient(*aggAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -56,13 +56,16 @@ func main() {
 	defer stop()
 
 	if *loadRPS > 0 && len(pf.Buckets) > 0 {
-		go generateLoad(ctx, f, policy.Request(pf.Buckets[0].Match), *loadRPS, log)
+		go generateLoad(ctx, f, policy.Request{Caller: pf.Buckets[0].Match.Caller, Callee: pf.Buckets[0].Match.Callee, Endpoint: pf.Buckets[0].Match.Endpoint}, *loadRPS, log)
 	}
 
 	log.Info("agent started", "aggregator", *aggAddr, "buckets", len(pf.Buckets))
 	upstream.Run(ctx, conn, upstream.Config{
-		Interval:    *interval,
-		Report:      func() *rlv1.UsageReport { return f.Snapshot(*nodeID, *zone, time.Now()) },
+		Interval: *interval,
+		Report: func() *rlv1.UsageReport {
+			r, _ := f.Snapshot(*nodeID, *zone, time.Now())
+			return r
+		},
 		OnDirective: func(d *rlv1.Directive) { f.Apply(d, time.Now()) },
 		OnTick: func(now time.Time) {
 			if n := f.ExpireStale(now); n > 0 {

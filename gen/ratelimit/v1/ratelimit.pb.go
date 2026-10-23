@@ -21,14 +21,71 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Priority is the shedding tier of a request. Lower tiers are shed first.
+type Priority int32
+
+const (
+	Priority_PRIORITY_UNSPECIFIED Priority = 0 // use the bucket's default priority
+	Priority_PRIORITY_LOW         Priority = 1
+	Priority_PRIORITY_MEDIUM      Priority = 2
+	Priority_PRIORITY_HIGH        Priority = 3
+)
+
+// Enum value maps for Priority.
+var (
+	Priority_name = map[int32]string{
+		0: "PRIORITY_UNSPECIFIED",
+		1: "PRIORITY_LOW",
+		2: "PRIORITY_MEDIUM",
+		3: "PRIORITY_HIGH",
+	}
+	Priority_value = map[string]int32{
+		"PRIORITY_UNSPECIFIED": 0,
+		"PRIORITY_LOW":         1,
+		"PRIORITY_MEDIUM":      2,
+		"PRIORITY_HIGH":        3,
+	}
+)
+
+func (x Priority) Enum() *Priority {
+	p := new(Priority)
+	*p = x
+	return p
+}
+
+func (x Priority) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Priority) Descriptor() protoreflect.EnumDescriptor {
+	return file_ratelimit_v1_ratelimit_proto_enumTypes[0].Descriptor()
+}
+
+func (Priority) Type() protoreflect.EnumType {
+	return &file_ratelimit_v1_ratelimit_proto_enumTypes[0]
+}
+
+func (x Priority) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Priority.Descriptor instead.
+func (Priority) EnumDescriptor() ([]byte, []int) {
+	return file_ratelimit_v1_ratelimit_proto_rawDescGZIP(), []int{0}
+}
+
 type UsageReport struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	NodeId          string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Zone            string                 `protobuf:"bytes,2,opt,name=zone,proto3" json:"zone,omitempty"`
-	WindowEndUnixMs int64                  `protobuf:"varint,3,opt,name=window_end_unix_ms,json=windowEndUnixMs,proto3" json:"window_end_unix_ms,omitempty"`
-	Buckets         []*BucketUsage         `protobuf:"bytes,4,rep,name=buckets,proto3" json:"buckets,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	NodeId string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	// Zone of the reporter. A regional controller reporting to the global tier
+	// puts its region name here.
+	Zone            string         `protobuf:"bytes,2,opt,name=zone,proto3" json:"zone,omitempty"`
+	WindowEndUnixMs int64          `protobuf:"varint,3,opt,name=window_end_unix_ms,json=windowEndUnixMs,proto3" json:"window_end_unix_ms,omitempty"`
+	Buckets         []*BucketUsage `protobuf:"bytes,4,rep,name=buckets,proto3" json:"buckets,omitempty"`
+	// Start of the window the counts cover; rate = count / (end - start).
+	WindowStartUnixMs int64 `protobuf:"varint,5,opt,name=window_start_unix_ms,json=windowStartUnixMs,proto3" json:"window_start_unix_ms,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *UsageReport) Reset() {
@@ -89,11 +146,20 @@ func (x *UsageReport) GetBuckets() []*BucketUsage {
 	return nil
 }
 
+func (x *UsageReport) GetWindowStartUnixMs() int64 {
+	if x != nil {
+		return x.WindowStartUnixMs
+	}
+	return 0
+}
+
 type BucketUsage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	BucketId      uint32                 `protobuf:"varint,1,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`
-	Offered       uint64                 `protobuf:"varint,2,opt,name=offered,proto3" json:"offered,omitempty"` // includes dropped requests (offered load)
-	Dropped       uint64                 `protobuf:"varint,3,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	BucketId uint32                 `protobuf:"varint,1,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`
+	Offered  uint64                 `protobuf:"varint,2,opt,name=offered,proto3" json:"offered,omitempty"` // includes dropped requests (offered load)
+	Dropped  uint64                 `protobuf:"varint,3,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	// Tier these counts belong to. One BucketUsage per (bucket, priority).
+	Priority      Priority `protobuf:"varint,4,opt,name=priority,proto3,enum=ratelimit.v1.Priority" json:"priority,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -149,11 +215,20 @@ func (x *BucketUsage) GetDropped() uint64 {
 	return 0
 }
 
+func (x *BucketUsage) GetPriority() Priority {
+	if x != nil {
+		return x.Priority
+	}
+	return Priority_PRIORITY_UNSPECIFIED
+}
+
 type Directive struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ConfigVersion uint64                 `protobuf:"varint,1,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"`
 	TtlMs         int64                  `protobuf:"varint,2,opt,name=ttl_ms,json=ttlMs,proto3" json:"ttl_ms,omitempty"` // on expiry the receiver fails open
 	Buckets       []*BucketDirective     `protobuf:"bytes,3,rep,name=buckets,proto3" json:"buckets,omitempty"`
+	// Global kill switch: every bucket behaves as shadow while set.
+	KillSwitch    bool `protobuf:"varint,4,opt,name=kill_switch,json=killSwitch,proto3" json:"kill_switch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -209,12 +284,25 @@ func (x *Directive) GetBuckets() []*BucketDirective {
 	return nil
 }
 
+func (x *Directive) GetKillSwitch() bool {
+	if x != nil {
+		return x.KillSwitch
+	}
+	return false
+}
+
 type BucketDirective struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	BucketId      uint32                 `protobuf:"varint,1,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`
-	DropPpm       uint32                 `protobuf:"varint,2,opt,name=drop_ppm,json=dropPpm,proto3" json:"drop_ppm,omitempty"` // drop ratio in parts per million
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	BucketId uint32                 `protobuf:"varint,1,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`
+	DropPpm  uint32                 `protobuf:"varint,2,opt,name=drop_ppm,json=dropPpm,proto3" json:"drop_ppm,omitempty"` // drop ratio in parts per million, across all tiers
+	// Per-tier drop ratios when tiered shedding applies. A tier that is not
+	// listed uses drop_ppm.
+	Tiers []*TierDirective `protobuf:"bytes,3,rep,name=tiers,proto3" json:"tiers,omitempty"`
+	// Smoothed offered RPS over the bucket's whole scope. Sent by the global
+	// tier so a region can fall back to its traffic share if the link is lost.
+	ScopeOfferedRps float64 `protobuf:"fixed64,4,opt,name=scope_offered_rps,json=scopeOfferedRps,proto3" json:"scope_offered_rps,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *BucketDirective) Reset() {
@@ -261,27 +349,107 @@ func (x *BucketDirective) GetDropPpm() uint32 {
 	return 0
 }
 
+func (x *BucketDirective) GetTiers() []*TierDirective {
+	if x != nil {
+		return x.Tiers
+	}
+	return nil
+}
+
+func (x *BucketDirective) GetScopeOfferedRps() float64 {
+	if x != nil {
+		return x.ScopeOfferedRps
+	}
+	return 0
+}
+
+type TierDirective struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Priority      Priority               `protobuf:"varint,1,opt,name=priority,proto3,enum=ratelimit.v1.Priority" json:"priority,omitempty"`
+	DropPpm       uint32                 `protobuf:"varint,2,opt,name=drop_ppm,json=dropPpm,proto3" json:"drop_ppm,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TierDirective) Reset() {
+	*x = TierDirective{}
+	mi := &file_ratelimit_v1_ratelimit_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TierDirective) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TierDirective) ProtoMessage() {}
+
+func (x *TierDirective) ProtoReflect() protoreflect.Message {
+	mi := &file_ratelimit_v1_ratelimit_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TierDirective.ProtoReflect.Descriptor instead.
+func (*TierDirective) Descriptor() ([]byte, []int) {
+	return file_ratelimit_v1_ratelimit_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *TierDirective) GetPriority() Priority {
+	if x != nil {
+		return x.Priority
+	}
+	return Priority_PRIORITY_UNSPECIFIED
+}
+
+func (x *TierDirective) GetDropPpm() uint32 {
+	if x != nil {
+		return x.DropPpm
+	}
+	return 0
+}
+
 var File_ratelimit_v1_ratelimit_proto protoreflect.FileDescriptor
 
 const file_ratelimit_v1_ratelimit_proto_rawDesc = "" +
 	"\n" +
-	"\x1cratelimit/v1/ratelimit.proto\x12\fratelimit.v1\"\x9c\x01\n" +
+	"\x1cratelimit/v1/ratelimit.proto\x12\fratelimit.v1\"\xcd\x01\n" +
 	"\vUsageReport\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
 	"\x04zone\x18\x02 \x01(\tR\x04zone\x12+\n" +
 	"\x12window_end_unix_ms\x18\x03 \x01(\x03R\x0fwindowEndUnixMs\x123\n" +
-	"\abuckets\x18\x04 \x03(\v2\x19.ratelimit.v1.BucketUsageR\abuckets\"^\n" +
+	"\abuckets\x18\x04 \x03(\v2\x19.ratelimit.v1.BucketUsageR\abuckets\x12/\n" +
+	"\x14window_start_unix_ms\x18\x05 \x01(\x03R\x11windowStartUnixMs\"\x92\x01\n" +
 	"\vBucketUsage\x12\x1b\n" +
 	"\tbucket_id\x18\x01 \x01(\rR\bbucketId\x12\x18\n" +
 	"\aoffered\x18\x02 \x01(\x04R\aoffered\x12\x18\n" +
-	"\adropped\x18\x03 \x01(\x04R\adropped\"\x82\x01\n" +
+	"\adropped\x18\x03 \x01(\x04R\adropped\x122\n" +
+	"\bpriority\x18\x04 \x01(\x0e2\x16.ratelimit.v1.PriorityR\bpriority\"\xa3\x01\n" +
 	"\tDirective\x12%\n" +
 	"\x0econfig_version\x18\x01 \x01(\x04R\rconfigVersion\x12\x15\n" +
 	"\x06ttl_ms\x18\x02 \x01(\x03R\x05ttlMs\x127\n" +
-	"\abuckets\x18\x03 \x03(\v2\x1d.ratelimit.v1.BucketDirectiveR\abuckets\"I\n" +
+	"\abuckets\x18\x03 \x03(\v2\x1d.ratelimit.v1.BucketDirectiveR\abuckets\x12\x1f\n" +
+	"\vkill_switch\x18\x04 \x01(\bR\n" +
+	"killSwitch\"\xa8\x01\n" +
 	"\x0fBucketDirective\x12\x1b\n" +
 	"\tbucket_id\x18\x01 \x01(\rR\bbucketId\x12\x19\n" +
-	"\bdrop_ppm\x18\x02 \x01(\rR\adropPpm2R\n" +
+	"\bdrop_ppm\x18\x02 \x01(\rR\adropPpm\x121\n" +
+	"\x05tiers\x18\x03 \x03(\v2\x1b.ratelimit.v1.TierDirectiveR\x05tiers\x12*\n" +
+	"\x11scope_offered_rps\x18\x04 \x01(\x01R\x0fscopeOfferedRps\"^\n" +
+	"\rTierDirective\x122\n" +
+	"\bpriority\x18\x01 \x01(\x0e2\x16.ratelimit.v1.PriorityR\bpriority\x12\x19\n" +
+	"\bdrop_ppm\x18\x02 \x01(\rR\adropPpm*^\n" +
+	"\bPriority\x12\x18\n" +
+	"\x14PRIORITY_UNSPECIFIED\x10\x00\x12\x10\n" +
+	"\fPRIORITY_LOW\x10\x01\x12\x13\n" +
+	"\x0fPRIORITY_MEDIUM\x10\x02\x12\x11\n" +
+	"\rPRIORITY_HIGH\x10\x032R\n" +
 	"\x10RateLimitControl\x12>\n" +
 	"\x04Sync\x12\x19.ratelimit.v1.UsageReport\x1a\x17.ratelimit.v1.Directive(\x010\x01B5Z3github.com/aupv9/valve/gen/ratelimit/v1;ratelimitv1b\x06proto3"
 
@@ -297,23 +465,29 @@ func file_ratelimit_v1_ratelimit_proto_rawDescGZIP() []byte {
 	return file_ratelimit_v1_ratelimit_proto_rawDescData
 }
 
-var file_ratelimit_v1_ratelimit_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_ratelimit_v1_ratelimit_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_ratelimit_v1_ratelimit_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_ratelimit_v1_ratelimit_proto_goTypes = []any{
-	(*UsageReport)(nil),     // 0: ratelimit.v1.UsageReport
-	(*BucketUsage)(nil),     // 1: ratelimit.v1.BucketUsage
-	(*Directive)(nil),       // 2: ratelimit.v1.Directive
-	(*BucketDirective)(nil), // 3: ratelimit.v1.BucketDirective
+	(Priority)(0),           // 0: ratelimit.v1.Priority
+	(*UsageReport)(nil),     // 1: ratelimit.v1.UsageReport
+	(*BucketUsage)(nil),     // 2: ratelimit.v1.BucketUsage
+	(*Directive)(nil),       // 3: ratelimit.v1.Directive
+	(*BucketDirective)(nil), // 4: ratelimit.v1.BucketDirective
+	(*TierDirective)(nil),   // 5: ratelimit.v1.TierDirective
 }
 var file_ratelimit_v1_ratelimit_proto_depIdxs = []int32{
-	1, // 0: ratelimit.v1.UsageReport.buckets:type_name -> ratelimit.v1.BucketUsage
-	3, // 1: ratelimit.v1.Directive.buckets:type_name -> ratelimit.v1.BucketDirective
-	0, // 2: ratelimit.v1.RateLimitControl.Sync:input_type -> ratelimit.v1.UsageReport
-	2, // 3: ratelimit.v1.RateLimitControl.Sync:output_type -> ratelimit.v1.Directive
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	2, // 0: ratelimit.v1.UsageReport.buckets:type_name -> ratelimit.v1.BucketUsage
+	0, // 1: ratelimit.v1.BucketUsage.priority:type_name -> ratelimit.v1.Priority
+	4, // 2: ratelimit.v1.Directive.buckets:type_name -> ratelimit.v1.BucketDirective
+	5, // 3: ratelimit.v1.BucketDirective.tiers:type_name -> ratelimit.v1.TierDirective
+	0, // 4: ratelimit.v1.TierDirective.priority:type_name -> ratelimit.v1.Priority
+	1, // 5: ratelimit.v1.RateLimitControl.Sync:input_type -> ratelimit.v1.UsageReport
+	3, // 6: ratelimit.v1.RateLimitControl.Sync:output_type -> ratelimit.v1.Directive
+	6, // [6:7] is the sub-list for method output_type
+	5, // [5:6] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_ratelimit_v1_ratelimit_proto_init() }
@@ -326,13 +500,14 @@ func file_ratelimit_v1_ratelimit_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ratelimit_v1_ratelimit_proto_rawDesc), len(file_ratelimit_v1_ratelimit_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   4,
+			NumEnums:      1,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_ratelimit_v1_ratelimit_proto_goTypes,
 		DependencyIndexes: file_ratelimit_v1_ratelimit_proto_depIdxs,
+		EnumInfos:         file_ratelimit_v1_ratelimit_proto_enumTypes,
 		MessageInfos:      file_ratelimit_v1_ratelimit_proto_msgTypes,
 	}.Build()
 	File_ratelimit_v1_ratelimit_proto = out.File

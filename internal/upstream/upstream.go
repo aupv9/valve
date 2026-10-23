@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
@@ -17,7 +19,20 @@ type Config struct {
 	Report      func() *rlv1.UsageReport // called once per cycle
 	OnDirective func(*rlv1.Directive)    // called for each directive received
 	OnTick      func(now time.Time)      // optional, e.g. TTL expiry
+	OnState     func(connected bool)     // optional, e.g. a metric
 	Log         *slog.Logger
+}
+
+// Dial creates a client for one upstream target. Targets that resolve to
+// several addresses (for example dns:///controller:9091 over a headless
+// Service) are balanced round robin, so a stream refused by a standby
+// replica is retried on another address.
+func Dial(target string, creds credentials.TransportCredentials) (*grpc.ClientConn, error) {
+	return grpc.NewClient(target,
+		grpc.WithTransportCredentials(creds),
+		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{Time: 30 * time.Second, Timeout: 10 * time.Second}),
+	)
 }
 
 // Run keeps a Sync stream open to conn until ctx is done. OnTick runs on its
@@ -66,6 +81,14 @@ func runOnce(ctx context.Context, client rlv1.RateLimitControlClient, cfg Config
 	stream, err := client.Sync(ctx)
 	if err != nil {
 		return err
+	}
+	// Report at once so the upstream learns our zone without waiting a cycle.
+	if err := stream.Send(cfg.Report()); err != nil {
+		return err
+	}
+	if cfg.OnState != nil {
+		cfg.OnState(true)
+		defer cfg.OnState(false)
 	}
 
 	errc := make(chan error, 1)

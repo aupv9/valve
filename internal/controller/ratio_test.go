@@ -93,3 +93,31 @@ func TestAllocateByPriority(t *testing.T) {
 		})
 	}
 }
+
+func TestStepTieredShedsLowFirst(t *testing.T) {
+	var s BucketState
+	// 600 low + 900 high against a limit of 1000: shed 500, all from low.
+	var p float64
+	var tiers Tiers
+	for range 30 {
+		p, tiers = s.StepTiered(Tiers{0, 600, 0, 900}, 1000, DefaultParams)
+	}
+	if !approx(p, 1.0/3) {
+		t.Fatalf("overall p = %v, want 1/3", p)
+	}
+	if !approx(tiers[1], 500.0/600) || tiers[3] != 0 {
+		t.Fatalf("tiers = %v, want low=%v high=0", tiers, 500.0/600)
+	}
+}
+
+func TestStepTieredSpillsToHigh(t *testing.T) {
+	var s BucketState
+	var tiers Tiers
+	for range 30 {
+		_, tiers = s.StepTiered(Tiers{0, 200, 0, 1300}, 1000, DefaultParams)
+	}
+	// Shed 500: low fully dropped (200), high absorbs 300 of 1300.
+	if tiers[1] != 1 || !approx(tiers[3], 300.0/1300) {
+		t.Fatalf("tiers = %v", tiers)
+	}
+}

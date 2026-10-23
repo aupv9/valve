@@ -56,6 +56,12 @@ func (s *BucketState) Step(offeredRPS, limit float64, prm Params) float64 {
 	return s.p
 }
 
+// seeded returns a state as if the bucket had been running at offered RPS
+// with drop ratio p.
+func seeded(offeredRPS, p float64) *BucketState {
+	return &BucketState{smoothed: offeredRPS, p: p, primed: true}
+}
+
 // Ratio returns the current drop ratio without advancing the state.
 func (s *BucketState) Ratio() float64 { return s.p }
 
@@ -86,4 +92,37 @@ func AllocateByPriority(tierRPS []float64, limit float64) []float64 {
 		remaining -= out[i] * r
 	}
 	return out
+}
+
+// Smoothed returns R̂, the smoothed offered RPS.
+func (s *BucketState) Smoothed() float64 { return s.smoothed }
+
+// Tiers holds one value per priority, indexed by rlv1.Priority
+// (index 0, unspecified, is unused).
+type Tiers [4]float64
+
+// StepTiered advances the bucket with its per-tier offered RPS and returns
+// the overall drop ratio plus a per-tier split of the same shed load. The
+// overall ratio keeps every stability guard of Step; the split only decides
+// who absorbs the shed, lowest priority first.
+func (s *BucketState) StepTiered(tierRPS Tiers, limit float64, prm Params) (float64, Tiers) {
+	var total float64
+	for _, r := range tierRPS[1:] {
+		total += r
+	}
+	p := s.Step(total, limit, prm)
+	var out Tiers
+	if p == 0 || total == 0 {
+		return p, out
+	}
+	// Scale the raw tier mix to the smoothed rate, then shed p·R̂ from the
+	// bottom up.
+	scale := s.smoothed / total
+	scaled := make([]float64, 3)
+	for i := range scaled {
+		scaled[i] = tierRPS[i+1] * scale
+	}
+	alloc := AllocateByPriority(scaled, s.smoothed*(1-p))
+	copy(out[1:], alloc)
+	return p, out
 }

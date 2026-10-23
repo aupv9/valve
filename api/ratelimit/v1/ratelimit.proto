@@ -11,26 +11,53 @@ service RateLimitControl {
   rpc Sync(stream UsageReport) returns (stream Directive);
 }
 
+// Priority is the shedding tier of a request. Lower tiers are shed first.
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0; // use the bucket's default priority
+  PRIORITY_LOW = 1;
+  PRIORITY_MEDIUM = 2;
+  PRIORITY_HIGH = 3;
+}
+
 message UsageReport {
   string node_id = 1;
+  // Zone of the reporter. A regional controller reporting to the global tier
+  // puts its region name here.
   string zone = 2;
   int64 window_end_unix_ms = 3;
   repeated BucketUsage buckets = 4;
+  // Start of the window the counts cover; rate = count / (end - start).
+  int64 window_start_unix_ms = 5;
 }
 
 message BucketUsage {
   uint32 bucket_id = 1;
   uint64 offered = 2; // includes dropped requests (offered load)
   uint64 dropped = 3;
+  // Tier these counts belong to. One BucketUsage per (bucket, priority).
+  Priority priority = 4;
 }
 
 message Directive {
   uint64 config_version = 1;
   int64 ttl_ms = 2; // on expiry the receiver fails open
   repeated BucketDirective buckets = 3;
+  // Global kill switch: every bucket behaves as shadow while set.
+  bool kill_switch = 4;
 }
 
 message BucketDirective {
   uint32 bucket_id = 1;
-  uint32 drop_ppm = 2; // drop ratio in parts per million
+  uint32 drop_ppm = 2; // drop ratio in parts per million, across all tiers
+  // Per-tier drop ratios when tiered shedding applies. A tier that is not
+  // listed uses drop_ppm.
+  repeated TierDirective tiers = 3;
+  // Smoothed offered RPS over the bucket's whole scope. Sent by the global
+  // tier so a region can fall back to its traffic share if the link is lost.
+  double scope_offered_rps = 4;
+}
+
+message TierDirective {
+  Priority priority = 1;
+  uint32 drop_ppm = 2;
 }

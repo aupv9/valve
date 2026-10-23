@@ -1,18 +1,44 @@
 // Package hub is the downstream side shared by aggregators and controllers:
-// it accepts Sync streams, collects UsageReports and fans Directives out.
+// it accepts Sync streams, keeps the latest usage report of every node and
+// fans Directives out.
 package hub
 
 import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
-// Usage is offered/dropped counts summed over one collection window.
-type Usage struct {
-	Offered uint64
-	Dropped uint64
+// Key identifies one usage series.
+type Key struct {
+	Bucket   uint32
+	Priority rlv1.Priority
+	Zone     string
+}
+
+// Rate is usage in requests per second.
+type Rate struct {
+	Offered float64
+	Dropped float64
+}
+
+// Builder returns the directive for peers in a zone ("" if not known yet).
+type Builder func(zone string) *rlv1.Directive
+
+type nodeReport struct {
+	zone       string
+	start, end int64 // unix ms
+	buckets    []*rlv1.BucketUsage
+}
+
+type peer struct {
+	zone string // guarded by Hub.mu; learned from the peer's reports
+	ch   chan *rlv1.Directive
+	kick chan struct{} // closed when the hub stops serving
 }
 
 // Hub implements rlv1.RateLimitControlServer.
@@ -23,29 +49,60 @@ type Hub struct {
 	now        func() time.Time
 
 	mu      sync.Mutex
-	pending []*rlv1.UsageReport
-	subs    map[chan *rlv1.Directive]struct{}
-	last    *rlv1.Directive // replayed to new subscribers
+	nodes   map[string]*nodeReport
+	peers   map[*peer]struct{}
+	build   Builder // last builder, replayed to new peers
+	serving bool
 }
 
-// New returns a Hub that ignores reports whose window ended more than
-// staleAfter ago, so a lagging zone is dropped rather than summed stale.
+// New returns a serving Hub. Reports whose window ended more than staleAfter
+// ago are ignored, so a lagging node or zone is dropped rather than counted
+// with old numbers.
 func New(staleAfter time.Duration) *Hub {
-	return &Hub{staleAfter: staleAfter, now: time.Now, subs: map[chan *rlv1.Directive]struct{}{}}
+	return &Hub{
+		staleAfter: staleAfter,
+		now:        time.Now,
+		nodes:      map[string]*nodeReport{},
+		peers:      map[*peer]struct{}{},
+		serving:    true,
+	}
 }
+
+// SetServing controls whether the hub accepts streams. Turning it off ends
+// every open stream with codes.Unavailable so peers reconnect elsewhere
+// (used by controller replicas that are not the leader).
+func (h *Hub) SetServing(on bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.serving == on {
+		return
+	}
+	h.serving = on
+	if !on {
+		for p := range h.peers {
+			close(p.kick)
+			delete(h.peers, p)
+		}
+		h.nodes = map[string]*nodeReport{}
+		h.build = nil
+	}
+}
+
+var errNotServing = status.Error(codes.Unavailable, "not serving (not the leader)")
 
 // Sync serves one downstream peer: reports in, directives out.
 func (h *Hub) Sync(stream rlv1.RateLimitControl_SyncServer) error {
-	ch := make(chan *rlv1.Directive, 1)
+	p := &peer{ch: make(chan *rlv1.Directive, 1), kick: make(chan struct{})}
 	h.mu.Lock()
-	h.subs[ch] = struct{}{}
-	if h.last != nil {
-		ch <- h.last
+	if !h.serving {
+		h.mu.Unlock()
+		return errNotServing
 	}
+	h.peers[p] = struct{}{}
 	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
-		delete(h.subs, ch)
+		delete(h.peers, p)
 		h.mu.Unlock()
 	}()
 
@@ -57,68 +114,140 @@ func (h *Hub) Sync(stream rlv1.RateLimitControl_SyncServer) error {
 				errc <- err
 				return
 			}
-			h.mu.Lock()
-			h.pending = append(h.pending, r)
-			h.mu.Unlock()
+			h.record(p, r)
 		}
 	}()
 
 	for {
 		select {
-		case d := <-ch:
+		case d := <-p.ch:
 			if err := stream.Send(d); err != nil {
 				return err
 			}
 		case err := <-errc:
 			return err
+		case <-p.kick:
+			return errNotServing
 		case <-stream.Context().Done():
 			return stream.Context().Err()
 		}
 	}
 }
 
-// Collect sums and clears every report received since the previous call,
-// skipping stale ones.
-func (h *Hub) Collect() map[uint32]Usage {
+func (h *Hub) record(p *peer, r *rlv1.UsageReport) {
+	start, end := r.GetWindowStartUnixMs(), r.GetWindowEndUnixMs()
 	h.mu.Lock()
-	reports := h.pending
-	h.pending = nil
-	h.mu.Unlock()
+	defer h.mu.Unlock()
+	if p.zone != r.GetZone() {
+		p.zone = r.GetZone()
+		if h.build != nil {
+			offer(p.ch, h.build(p.zone)) // directive for the zone it just announced
+		}
+	}
+	if end <= start {
+		return // no usable window
+	}
+	if old, ok := h.nodes[r.GetNodeId()]; ok && old.end >= end {
+		return // out of order
+	}
+	h.nodes[r.GetNodeId()] = &nodeReport{zone: r.GetZone(), start: start, end: end, buckets: r.GetBuckets()}
+}
 
+// Rates returns the current rate of every series: the latest fresh report
+// of each node, converted to per-second rates and summed.
+func (h *Hub) Rates() map[Key]Rate {
 	cutoff := h.now().Add(-h.staleAfter).UnixMilli()
-	out := map[uint32]Usage{}
-	for _, r := range reports {
-		if r.GetWindowEndUnixMs() < cutoff {
+	out := map[Key]Rate{}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id, n := range h.nodes {
+		if n.end < cutoff {
+			delete(h.nodes, id)
 			continue
 		}
-		for _, b := range r.GetBuckets() {
-			u := out[b.GetBucketId()]
-			u.Offered += b.GetOffered()
-			u.Dropped += b.GetDropped()
-			out[b.GetBucketId()] = u
+		secs := float64(n.end-n.start) / 1000
+		for _, b := range n.buckets {
+			k := Key{Bucket: b.GetBucketId(), Priority: b.GetPriority(), Zone: n.zone}
+			r := out[k]
+			r.Offered += float64(b.GetOffered()) / secs
+			r.Dropped += float64(b.GetDropped()) / secs
+			out[k] = r
 		}
 	}
 	return out
 }
 
-// Broadcast sends d to every connected peer. A slow peer gets only the latest
-// directive: an older pending one is replaced, never queued.
-func (h *Hub) Broadcast(d *rlv1.Directive) {
+// Broadcast sends every peer the directive for its zone. A slow peer gets
+// only the latest directive: an older pending one is replaced, never queued.
+func (h *Hub) Broadcast(build Builder) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.last = d
-	for ch := range h.subs {
-		select {
-		case <-ch:
-		default:
+	h.build = build
+	byZone := map[string]*rlv1.Directive{}
+	for p := range h.peers {
+		d, ok := byZone[p.zone]
+		if !ok {
+			d = build(p.zone)
+			byZone[p.zone] = d
 		}
-		ch <- d
+		offer(p.ch, d)
 	}
+}
+
+// BroadcastAll sends the same directive to every peer.
+func (h *Hub) BroadcastAll(d *rlv1.Directive) {
+	h.Broadcast(func(string) *rlv1.Directive { return d })
+}
+
+// offer replaces any pending directive with d. Caller holds Hub.mu, which
+// makes it the only sender on ch.
+func offer(ch chan *rlv1.Directive, d *rlv1.Directive) {
+	select {
+	case <-ch:
+	default:
+	}
+	ch <- d
 }
 
 // Peers returns the number of connected downstream streams.
 func (h *Hub) Peers() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.subs)
+	return len(h.peers)
+}
+
+// Report builds an upstream report from rates: counts over [start, end],
+// summed across zones and relabelled with the given zone. keep filters
+// buckets; nil keeps all.
+func Report(nodeID, zone string, rates map[Key]Rate, start, end time.Time, keep func(bucket uint32) bool) *rlv1.UsageReport {
+	type bp struct {
+		bucket uint32
+		prio   rlv1.Priority
+	}
+	sum := map[bp]Rate{}
+	for k, r := range rates {
+		if keep != nil && !keep(k.Bucket) {
+			continue
+		}
+		s := sum[bp{k.Bucket, k.Priority}]
+		s.Offered += r.Offered
+		s.Dropped += r.Dropped
+		sum[bp{k.Bucket, k.Priority}] = s
+	}
+	secs := end.Sub(start).Seconds()
+	rep := &rlv1.UsageReport{
+		NodeId:            nodeID,
+		Zone:              zone,
+		WindowStartUnixMs: start.UnixMilli(),
+		WindowEndUnixMs:   end.UnixMilli(),
+	}
+	for k, r := range sum {
+		rep.Buckets = append(rep.Buckets, &rlv1.BucketUsage{
+			BucketId: k.bucket,
+			Priority: k.prio,
+			Offered:  uint64(r.Offered*secs + 0.5),
+			Dropped:  uint64(r.Dropped*secs + 0.5),
+		})
+	}
+	return rep
 }

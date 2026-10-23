@@ -1,5 +1,6 @@
 // Command aggregator runs per zone: it sums usage from sidecars, forwards it
-// to the regional controller, and relays directives back down. Stateless.
+// to the regional controller shards, and relays their merged directives back
+// down. Stateless; run several replicas per zone.
 package main
 
 import (
@@ -10,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,7 +34,7 @@ func main() {
 
 func run(log *slog.Logger) error {
 	listen := flag.String("listen", ":9090", "gRPC listen address for sidecars")
-	controllerAddr := flag.String("controller", "localhost:9091", "regional controller address")
+	controllers := flag.String("controller", "localhost:9091", "comma-separated regional controller targets, one per shard")
 	nodeID := flag.String("node-id", hostname(), "this aggregator's id")
 	zone := flag.String("zone", "local", "zone name")
 	interval := flag.Duration("interval", time.Second, "report cycle")
@@ -46,33 +48,40 @@ func run(log *slog.Logger) error {
 	srv := grpc.NewServer()
 	rlv1.RegisterRateLimitControlServer(srv, h)
 
-	// TODO: mTLS between tiers.
-	conn, err := grpc.NewClient(*controllerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("dial controller: %w", err)
-	}
-	defer conn.Close()
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go upstream.Run(ctx, conn, upstream.Config{
-		Interval: *interval,
-		Report: func() *rlv1.UsageReport {
-			r := &rlv1.UsageReport{NodeId: *nodeID, Zone: *zone, WindowEndUnixMs: time.Now().UnixMilli()}
-			for id, u := range h.Collect() {
-				r.Buckets = append(r.Buckets, &rlv1.BucketUsage{BucketId: id, Offered: u.Offered, Dropped: u.Dropped})
-			}
-			return r
-		},
-		OnDirective: h.Broadcast,
-		Log:         log,
-	})
+
+	merger := upstream.NewMerger()
+	for i, target := range strings.Split(*controllers, ",") {
+		conn, err := upstream.Dial(target, insecure.NewCredentials())
+		if err != nil {
+			return fmt.Errorf("dial controller %s: %w", target, err)
+		}
+		defer conn.Close()
+		prev := time.Now()
+		go upstream.Run(ctx, conn, upstream.Config{
+			Interval: *interval,
+			Report: func() *rlv1.UsageReport {
+				now := time.Now()
+				r := hub.Report(*nodeID, *zone, h.Rates(), prev, now, nil)
+				prev = now
+				return r
+			},
+			OnDirective: func(d *rlv1.Directive) {
+				merger.Set(i, d)
+				if m := merger.Merged(); m != nil {
+					h.BroadcastAll(m)
+				}
+			},
+			Log: log.With("upstream", target),
+		})
+	}
 	go func() {
 		<-ctx.Done()
 		srv.GracefulStop()
 	}()
 
-	log.Info("aggregator listening", "addr", lis.Addr().String(), "controller", *controllerAddr)
+	log.Info("aggregator listening", "addr", lis.Addr().String(), "controllers", *controllers, "zone", *zone)
 	if err := srv.Serve(lis); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
