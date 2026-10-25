@@ -25,7 +25,7 @@ Mọi phần của thiết kế đã có code và đã chạy thử, trừ ba ph
 | Tích hợp Envoy, hướng 1 (filter Go trong Envoy) | Chưa | |
 | Configurator mô phỏng tác động 7 ngày | Chưa | |
 | Heavy-hitter theo user/tenant | Để sau (câu hỏi mở trong thiết kế) | |
-| Header `Retry-After` khi trả 429 | Chưa: fault filter của Envoy không thêm header | |
+| Header `Retry-After` khi trả 429 | Xong: `local_reply_config` của Envoy thêm header cho các 429 do Valve chặn (response flag `FI`), mặc định 1 giây | `envoy.Config`, `configurator envoy -retry-after` |
 
 ## Luồng dữ liệu
 
@@ -71,6 +71,7 @@ Mỗi chu kỳ (mặc định 1 giây), usage đi lên và chỉ thị đi xuố
 | Envoy: offered load | allowed / (1 − p) với p là ratio Envoy áp trong cửa sổ | Envoy chỉ đếm request tới router; p ≤ 0,9 nên ước lượng bị chặn |
 | Envoy: bucket chồng lấn | Bucket rộng loại trừ bucket hẹp bằng một matcher đảo nếu chỉ khác một chiều; khác hai chiều thì cảnh báo | Envoy không biểu diễn được "không phải (A và B)" |
 | TTL chỉ thị | 5 giây (`-ttl`) | Lớn hơn vài chu kỳ để chịu được một lần reconnect |
+| `Retry-After` | 1 giây, cố định | Bằng một chu kỳ điều khiển; sau đó drop ratio có thể đã đổi. Fault filter không thêm được header nên dùng `local_reply_config` |
 
 ## Kết quả đo được
 

@@ -35,7 +35,7 @@ buckets:
   - {name: pay, match: {callee: checkout, endpoint: /pay}, limit_rps: 10}
   - {name: other, match: {callee: payments}, limit_rps: 10}
 `)
-	frag, err := Config(pf, "checkout", CallerMatch{})
+	frag, err := Config(pf, "checkout", Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,12 +69,16 @@ buckets:
   - {name: any, match: {callee: checkout}, limit_rps: 10}
   - {name: web-create, match: {caller: web, callee: checkout, endpoint: CreateOrder}, limit_rps: 10}
 `)
-	frag, err := Config(pf, "checkout", CallerMatch{SPIFFE: true})
+	frag, err := Config(pf, "checkout", Options{Caller: CallerMatch{SPIFFE: true}, RetryAfter: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(frag.Warnings) != 1 {
 		t.Fatalf("warnings = %v, want 1", frag.Warnings)
+	}
+	ra := frag.LocalReplyConfig.GetMappers()[0]
+	if ra.GetHeadersToAdd()[0].GetHeader().GetValue() != "3" || ra.GetFilter().GetResponseFlagFilter().GetFlags()[0] != "FI" {
+		t.Fatalf("Retry-After mapper = %v", ra)
 	}
 	h := frag.VirtualClusters[0].GetHeaders()
 	if h[0].GetName() != "x-forwarded-client-cert" || !strings.Contains(h[0].GetStringMatch().GetSafeRegex().GetRegex(), "/sa/web") {

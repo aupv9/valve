@@ -86,7 +86,7 @@ web      06:59:26 200=206 429=94
 mobile   06:59:26 200=150
 ```
 
-Flip the kill switch and every request goes through within a second:
+Rejected requests carry `Retry-After: 1`. Flip the kill switch and every request goes through within a second:
 
 ```sh
 curl -X PUT localhost:28080/kill-switch -d '{"enabled":true}'
@@ -202,10 +202,10 @@ Valve is **experimental**. Every component of the design runs and has been teste
 - [x] Global tier for `scope: global` with regional fallback, leader election, bucket sharding
 - [x] Priority-tier shedding
 - [x] Prometheus metrics and mTLS between tiers
+- [x] `Retry-After` on 429 responses
 - [ ] Go filter running inside Envoy (per-tier ratios at the sidecar, more match dimensions)
 - [ ] Policy impact simulation against historical traffic
 - [ ] Per-user and per-tenant limits through heavy-hitter sketches
-- [ ] `Retry-After` on 429 responses
 
 ## Acknowledgements
 

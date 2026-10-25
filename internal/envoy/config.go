@@ -1,25 +1,25 @@
-// Package envoy integrates Valve with an unmodified Envoy sidecar
-// ("direction 2" in the design doc):
+// Package envoy integrates Valve with an unmodified Envoy sidecar.
 //
-//   - Config generates, per bucket of the local service, a fault filter that
-//     aborts with 429 at a percentage read from the runtime key
-//     valve.<bucket>.abort_ppm, and a virtual cluster that counts the
-//     requests let through.
-//   - DataPlane is the agent side: it serves those runtime keys to Envoy over
-//     RTDS and reads the virtual cluster counters from the admin API.
+// Config generates, per bucket of the local service, a fault filter that
+// aborts with 429 at a ratio read from the runtime key
+// valve.<bucket>.abort_ppm, and a virtual cluster that counts the requests
+// let through. DataPlane is the agent side: it serves those runtime keys over
+// RTDS and reads the virtual cluster counters from the admin API.
 //
-// Envoy cannot express "most specific bucket wins" for every overlap. Where
-// a less specific bucket can exclude a more specific one with one inverted
-// header match it does; otherwise Config reports a warning and a request may
-// be sampled by both buckets.
+// Envoy cannot express "most specific bucket wins" for every overlap. Where a
+// broader bucket can exclude a narrower one with one inverted header match it
+// does; otherwise Config warns, and a request may be sampled by both buckets.
 package envoy
 
 import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
+	accesslogv3 "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	faultv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/fault/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
@@ -38,6 +38,9 @@ const (
 	VirtualClusterPrefix = "valve_"
 	// RuntimeLayer is the RTDS layer name Envoy must subscribe to.
 	RuntimeLayer = "valve"
+	// DefaultRetryAfter is the Retry-After value, in seconds, sent with 429:
+	// one control cycle, after which the drop ratio may have changed.
+	DefaultRetryAfter = 1
 )
 
 // RuntimeKey is the runtime key holding a bucket's abort ratio in ppm.
@@ -45,37 +48,50 @@ func RuntimeKey(bucket string) string { return "valve." + bucket + ".abort_ppm" 
 
 // CallerMatch says how Envoy identifies the caller of a request.
 type CallerMatch struct {
-	// Header holds the caller name verbatim (for example x-valve-caller set
-	// by a trusted gateway). Used when SPIFFE is false.
+	// Header holds the caller name verbatim, set by a trusted gateway.
 	Header string
 	// SPIFFE matches the service account in the client certificate URI that
 	// Envoy forwards in x-forwarded-client-cert (…/sa/<caller>).
 	SPIFFE bool
 }
 
+// Options tune the generated configuration.
+type Options struct {
+	Caller CallerMatch
+	// RetryAfter is the Retry-After header value in seconds on 429
+	// responses; 0 means DefaultRetryAfter.
+	RetryAfter int
+}
+
 // Fragment is the Envoy configuration for one service's buckets.
 type Fragment struct {
-	HTTPFilters     []*hcmv3.HttpFilter       // insert before envoy.filters.http.router
-	VirtualClusters []*routev3.VirtualCluster // add to the service's virtual host
-	Buckets         []*policy.Bucket          // buckets covered, most specific first
-	Warnings        []string
+	HTTPFilters      []*hcmv3.HttpFilter       // before envoy.filters.http.router
+	VirtualClusters  []*routev3.VirtualCluster // in the service's virtual host
+	LocalReplyConfig *hcmv3.LocalReplyConfig   // in the HTTP connection manager
+	Buckets          []*policy.Bucket          // most specific first
+	Warnings         []string
 }
 
 // Config builds the fragment for buckets whose callee is service.
-func Config(pf *policy.File, service string, cm CallerMatch) (*Fragment, error) {
+func Config(pf *policy.File, service string, opts Options) (*Fragment, error) {
+	cm := opts.Caller
 	if !cm.SPIFFE && cm.Header == "" {
 		cm.Header = "x-valve-caller"
 	}
+	if opts.RetryAfter <= 0 {
+		opts.RetryAfter = DefaultRetryAfter
+	}
+
 	var bs []*policy.Bucket
 	for i := range pf.Buckets {
 		if pf.Buckets[i].Match.Callee == service {
 			bs = append(bs, &pf.Buckets[i])
 		}
 	}
-	// Most specific first: Envoy uses the first matching virtual cluster.
+	// Envoy uses the first matching virtual cluster.
 	slices.SortStableFunc(bs, func(a, b *policy.Bucket) int { return specificity(b) - specificity(a) })
 
-	frag := &Fragment{Buckets: bs}
+	frag := &Fragment{Buckets: bs, LocalReplyConfig: retryAfter(opts.RetryAfter)}
 	for _, b := range bs {
 		headers := matchers(b.Match, cm)
 		for _, other := range bs {
@@ -92,15 +108,14 @@ func Config(pf *policy.File, service string, cm CallerMatch) (*Fragment, error) 
 			headers = append(headers, ex)
 		}
 
-		fault := &faultv3.HTTPFault{
+		typed, err := anypb.New(&faultv3.HTTPFault{
 			Abort: &faultv3.FaultAbort{
 				ErrorType:  &faultv3.FaultAbort_HttpStatus{HttpStatus: 429},
-				Percentage: &typev3.FractionalPercent{Numerator: 0, Denominator: typev3.FractionalPercent_MILLION},
+				Percentage: &typev3.FractionalPercent{Denominator: typev3.FractionalPercent_MILLION},
 			},
 			AbortPercentRuntime: RuntimeKey(b.Name),
 			Headers:             headers,
-		}
-		typed, err := anypb.New(fault)
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -114,6 +129,21 @@ func Config(pf *policy.File, service string, cm CallerMatch) (*Fragment, error) 
 		})
 	}
 	return frag, nil
+}
+
+// retryAfter adds Retry-After to local replies for injected aborts (response
+// flag FI). The fault filter cannot add headers itself, and the flag keeps
+// other local replies, such as 503s, untouched.
+func retryAfter(seconds int) *hcmv3.LocalReplyConfig {
+	return &hcmv3.LocalReplyConfig{Mappers: []*hcmv3.ResponseMapper{{
+		Filter: &accesslogv3.AccessLogFilter{FilterSpecifier: &accesslogv3.AccessLogFilter_ResponseFlagFilter{
+			ResponseFlagFilter: &accesslogv3.ResponseFlagFilter{Flags: []string{"FI"}},
+		}},
+		HeadersToAdd: []*corev3.HeaderValueOption{{
+			Header:       &corev3.HeaderValue{Key: "retry-after", Value: strconv.Itoa(seconds)},
+			AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+		}},
+	}}}
 }
 
 func specificity(b *policy.Bucket) int {
@@ -168,30 +198,25 @@ func matchers(m policy.Match, cm CallerMatch) []*routev3.HeaderMatcher {
 func callerMatcher(caller string, cm CallerMatch) *routev3.HeaderMatcher {
 	if cm.SPIFFE {
 		re := `.*URI=spiffe://[^;,]*/sa/` + regexpQuote(caller) + `(;.*|,.*|$)`
-		return &routev3.HeaderMatcher{
-			Name: "x-forwarded-client-cert",
-			HeaderMatchSpecifier: &routev3.HeaderMatcher_StringMatch{StringMatch: &matcherv3.StringMatcher{
-				MatchPattern: &matcherv3.StringMatcher_SafeRegex{SafeRegex: &matcherv3.RegexMatcher{Regex: re}},
-			}},
-		}
+		return headerMatcher("x-forwarded-client-cert", &matcherv3.StringMatcher{
+			MatchPattern: &matcherv3.StringMatcher_SafeRegex{SafeRegex: &matcherv3.RegexMatcher{Regex: re}},
+		})
 	}
-	return &routev3.HeaderMatcher{
-		Name: cm.Header,
-		HeaderMatchSpecifier: &routev3.HeaderMatcher_StringMatch{StringMatch: &matcherv3.StringMatcher{
-			MatchPattern: &matcherv3.StringMatcher_Exact{Exact: caller},
-		}},
-	}
+	return headerMatcher(cm.Header, &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Exact{Exact: caller}})
 }
 
 // endpointMatcher matches a path prefix when the endpoint starts with "/"
 // (HTTP routes), otherwise a gRPC method name at the end of the path.
 func endpointMatcher(endpoint string) *routev3.HeaderMatcher {
-	sm := &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Suffix{Suffix: "/" + endpoint}}
 	if strings.HasPrefix(endpoint, "/") {
-		sm = &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Prefix{Prefix: endpoint}}
+		return headerMatcher(":path", &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Prefix{Prefix: endpoint}})
 	}
+	return headerMatcher(":path", &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Suffix{Suffix: "/" + endpoint}})
+}
+
+func headerMatcher(name string, sm *matcherv3.StringMatcher) *routev3.HeaderMatcher {
 	return &routev3.HeaderMatcher{
-		Name:                 ":path",
+		Name:                 name,
 		HeaderMatchSpecifier: &routev3.HeaderMatcher_StringMatch{StringMatch: sm},
 	}
 }
@@ -207,39 +232,42 @@ func regexpQuote(s string) string {
 	return b.String()
 }
 
-// YAML renders the fragment as two YAML lists ready to paste into an Envoy
-// config (or an Istio EnvoyFilter patch).
+// YAML renders the fragment as YAML ready to paste into an Envoy config or
+// an Istio EnvoyFilter patch.
 func (f *Fragment) YAML() ([]byte, error) {
-	toAny := func(ms []proto.Message) ([]any, error) {
-		out := make([]any, 0, len(ms))
-		for _, m := range ms {
-			b, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(m)
-			if err != nil {
-				return nil, err
-			}
-			var v any
-			if err := json.Unmarshal(b, &v); err != nil {
-				return nil, err
-			}
-			out = append(out, v)
+	var filters, vcs []any
+	for _, x := range f.HTTPFilters {
+		v, err := plain(x)
+		if err != nil {
+			return nil, err
 		}
-		return out, nil
+		filters = append(filters, v)
 	}
-	filters := make([]proto.Message, len(f.HTTPFilters))
-	for i, x := range f.HTTPFilters {
-		filters[i] = x
+	for _, x := range f.VirtualClusters {
+		v, err := plain(x)
+		if err != nil {
+			return nil, err
+		}
+		vcs = append(vcs, v)
 	}
-	vcs := make([]proto.Message, len(f.VirtualClusters))
-	for i, x := range f.VirtualClusters {
-		vcs[i] = x
-	}
-	hf, err := toAny(filters)
+	lrc, err := plain(f.LocalReplyConfig)
 	if err != nil {
 		return nil, err
 	}
-	vc, err := toAny(vcs)
+	return yaml.Marshal(map[string]any{
+		"http_filters":       filters,
+		"virtual_clusters":   vcs,
+		"local_reply_config": lrc,
+	})
+}
+
+// plain converts a proto message to plain Go values with proto field names.
+func plain(m proto.Message) (any, error) {
+	b, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(m)
 	if err != nil {
 		return nil, err
 	}
-	return yaml.Marshal(map[string]any{"http_filters": hf, "virtual_clusters": vc})
+	var v any
+	err = json.Unmarshal(b, &v)
+	return v, err
 }

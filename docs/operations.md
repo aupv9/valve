@@ -102,6 +102,7 @@ Cờ chung của mọi binary chạy lâu:
 | `configurator envoy` | `-service` | | Callee cần sinh cấu hình (bắt buộc) |
 | | `-caller-header` | `x-valve-caller` | Header chứa tên caller |
 | | `-caller-spiffe` | `false` | Nhận caller theo service account SPIFFE trong `x-forwarded-client-cert` |
+| | `-retry-after` | `1` | Giá trị `Retry-After` (giây) trên 429 |
 
 ## Viết policy
 
@@ -122,7 +123,7 @@ Policy nằm trong một thư mục `*.yaml`, được validate như một tập
 ## Tích hợp Envoy
 
 1. Sinh cấu hình cho service: `configurator envoy -policy policies -service checkout`.
-2. Thêm `http_filters` sinh ra vào trước `envoy.filters.http.router`, và `virtual_clusters` vào virtual host của service. Trong Istio, áp bằng `EnvoyFilter`.
+2. Thêm `http_filters` sinh ra vào trước `envoy.filters.http.router`, `virtual_clusters` vào virtual host của service, và `local_reply_config` vào HTTP connection manager (nó thêm `Retry-After` cho 429 của Valve). Trong Istio, áp bằng `EnvoyFilter`.
 3. Cho Envoy nạp runtime layer `valve` qua RTDS từ agent, và đặt `node.id`/`node.cluster`. Mẫu đầy đủ: [`deploy/demo/checkout-envoy.yaml`](../deploy/demo/checkout-envoy.yaml).
 4. Chạy agent cạnh Envoy: `agent -mode envoy -service checkout -aggregator <aggregator> -xds <configurator>`.
 
