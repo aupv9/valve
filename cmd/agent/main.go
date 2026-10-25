@@ -1,10 +1,5 @@
-// Command agent is the per-host sidecar agent: it keeps a stream to the zone
-// aggregator, reports usage and applies drop ratios to a data plane.
-//
-//	-mode envoy      drive an Envoy sidecar: serve abort ratios over RTDS and
-//	                 read counters from its admin API
-//	-mode inprocess  decide in the agent's own filter; with -load-rps it
-//	                 generates synthetic traffic to exercise the loop locally
+// Command agent reports usage to the zone aggregator and applies drop ratios
+// to Envoy (-mode envoy) or to its own filter (-mode inprocess).
 package main
 
 import (
@@ -32,7 +27,6 @@ import (
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
-// dataPlane is what the agent drives: the in-process filter or Envoy.
 type dataPlane interface {
 	SetTable(*policy.Table)
 	Version() uint64
@@ -83,14 +77,14 @@ func run(log *slog.Logger) error {
 	var inproc *filter.Filter
 	switch *mode {
 	case "inprocess":
-		inproc = filter.New() // allows everything until a policy arrives
+		inproc = filter.New()
 		dp = inproc
 	case "envoy":
 		if *service == "" {
 			return fmt.Errorf("-service is required with -mode envoy")
 		}
 		e := envoy.NewDataPlane(ctx, *envoyAdmin, *service, log)
-		// RTDS is plaintext on loopback: Envoy and the agent share the pod.
+
 		lis, err := net.Listen("tcp", *rtdsListen)
 		if err != nil {
 			return fmt.Errorf("rtds listen: %w", err)

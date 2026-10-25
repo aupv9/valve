@@ -1,7 +1,4 @@
 // Package policy loads, validates and compiles rate-limit bucket policies.
-//
-// Policies live in Git as YAML (see policies/). Compile turns a validated set
-// into a Table that matches requests without re-parsing.
 package policy
 
 import (
@@ -52,9 +49,9 @@ func (p Priority) Rank() int {
 }
 
 type Match struct {
-	Caller   string `yaml:"caller"`   // from mesh mTLS identity; empty = any caller
-	Callee   string `yaml:"callee"`   // required
-	Endpoint string `yaml:"endpoint"` // empty = every endpoint
+	Caller   string `yaml:"caller"`
+	Callee   string `yaml:"callee"`
+	Endpoint string `yaml:"endpoint"`
 }
 
 type Bucket struct {
@@ -65,7 +62,7 @@ type Bucket struct {
 	Priority Priority `yaml:"priority"`
 	Mode     Mode     `yaml:"mode"`
 
-	ID uint32 `yaml:"-"` // stable hash of Name, filled in by Validate
+	ID uint32 `yaml:"-"`
 }
 
 type File struct {
@@ -105,7 +102,6 @@ func decode(r io.Reader) (*File, error) {
 }
 
 // Validate checks every bucket, applies defaults and assigns IDs.
-// Buckets default to shadow mode.
 func (pf *File) Validate() error {
 	var errs []error
 	names := map[string]bool{}

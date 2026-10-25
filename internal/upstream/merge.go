@@ -7,10 +7,7 @@ import (
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
-// Merger combines directives from several upstreams (controller shards, each
-// owning a subset of buckets) into one. A source's directive counts only
-// until its own TTL runs out, so one silent shard never has its stale ratios
-// refreshed by the others.
+// Merger combines directives from controller shards, each live until its own TTL.
 type Merger struct {
 	now func() time.Time
 
@@ -35,8 +32,6 @@ func (m *Merger) Set(i int, d *rlv1.Directive) {
 }
 
 // Merged returns the union of all live directives, or nil if none is live.
-// Buckets are unioned, the kill switch is ORed, the TTL is the smallest
-// remaining one and the config version is the highest.
 func (m *Merger) Merged() *rlv1.Directive {
 	now := m.now()
 	m.mu.Lock()

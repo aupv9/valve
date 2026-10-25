@@ -8,7 +8,7 @@ import (
 func approx(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 func TestStepConvergesToDocExample(t *testing.T) {
-	// Caller at 1.5x the limit should converge to ~33% drop.
+
 	var s BucketState
 	var p float64
 	for range 20 {
@@ -21,7 +21,7 @@ func TestStepConvergesToDocExample(t *testing.T) {
 
 func TestStepSlewLimited(t *testing.T) {
 	var s BucketState
-	p := s.Step(10_000, 1000, DefaultParams) // target 0.9
+	p := s.Step(10_000, 1000, DefaultParams)
 	if !approx(p, 0.2) {
 		t.Fatalf("first step p = %v, want slew-limited 0.2", p)
 	}
@@ -29,13 +29,13 @@ func TestStepSlewLimited(t *testing.T) {
 
 func TestStepHysteresis(t *testing.T) {
 	var s BucketState
-	// 3% over the limit is inside the 5% band: do not engage.
+
 	for range 10 {
 		if p := s.Step(1030, 1000, DefaultParams); p != 0 {
 			t.Fatalf("engaged inside hysteresis band: p = %v", p)
 		}
 	}
-	// Engage well above the band, then drift back to 3% over: keep dropping.
+
 	for range 10 {
 		s.Step(1200, 1000, DefaultParams)
 	}
@@ -96,7 +96,7 @@ func TestAllocateByPriority(t *testing.T) {
 
 func TestStepTieredShedsLowFirst(t *testing.T) {
 	var s BucketState
-	// 600 low + 900 high against a limit of 1000: shed 500, all from low.
+
 	var p float64
 	var tiers Tiers
 	for range 30 {
@@ -116,7 +116,7 @@ func TestStepTieredSpillsToHigh(t *testing.T) {
 	for range 30 {
 		_, tiers = s.StepTiered(Tiers{0, 200, 0, 1300}, 1000, DefaultParams)
 	}
-	// Shed 500: low fully dropped (200), high absorbs 300 of 1300.
+
 	if tiers[1] != 1 || !approx(tiers[3], 300.0/1300) {
 		t.Fatalf("tiers = %v", tiers)
 	}

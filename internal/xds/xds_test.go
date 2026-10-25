@@ -113,7 +113,7 @@ func TestKillSwitchOwnStream(t *testing.T) {
 			return nil
 		}),
 	})
-	eventually(t, func() bool { return on.last() == "off" }) // initial state
+	eventually(t, func() bool { return on.last() == "off" })
 
 	start := time.Now()
 	if err := s.SetKillSwitch(&rlv1.KillSwitch{Enabled: true, Reason: "drill"}); err != nil {

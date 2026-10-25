@@ -1,5 +1,5 @@
-// Command loadgen sends HTTP requests at a fixed rate and prints the status
-// codes it gets back every second. Used by the Docker demo.
+// Command loadgen sends HTTP requests at a fixed rate and prints status codes
+// every second.
 //
 //	loadgen -url http://checkout:10000/checkout.Orders/CreateOrder -rps 300 -H x-valve-caller:web-gateway
 package main
@@ -74,7 +74,7 @@ func main() {
 		mu.Unlock()
 	}
 
-	const slots = 50 // spread each second over 20ms slots
+	const slots = 50
 	tick := time.NewTicker(time.Second / slots)
 	defer tick.Stop()
 	report := time.NewTicker(time.Second)
@@ -86,7 +86,7 @@ func main() {
 			carry += float64(*rps) / slots
 			for ; carry >= 1; carry-- {
 				if active.Load() >= 1024 {
-					continue // target is too slow; count as not sent
+					continue
 				}
 				active.Add(1)
 				wg.Add(1)

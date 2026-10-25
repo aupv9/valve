@@ -25,16 +25,11 @@ import (
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
-// DataPlane drives an Envoy sidecar. It has the same surface as the
-// in-process filter, so the agent's sync loop works with either.
-//
-// Envoy only counts requests that reach the router, i.e. the ones let
-// through. Offered load is estimated as allowed / (1 − p), where p is the
-// abort ratio Envoy applied during the window. p never exceeds the
-// controller's clamp (0.9 by default), so the estimate stays bounded.
+// DataPlane drives an Envoy sidecar with the same surface as the in-process
+// filter. Offered load is estimated as allowed / (1 − p).
 type DataPlane struct {
-	admin   string // Envoy admin base URL
-	service string // only buckets whose callee is this service are driven
+	admin   string
+	service string
 	client  *http.Client
 	rtds    *cache.LinearCache
 	xds     server.Server
@@ -42,21 +37,20 @@ type DataPlane struct {
 
 	mu            sync.Mutex
 	table         *policy.Table
-	buckets       map[string]*policy.Bucket // by name, local service only
-	target        map[uint32]uint32         // controller's ratio (ppm)
+	buckets       map[string]*policy.Bucket
+	target        map[uint32]uint32
 	expires       map[uint32]time.Time
-	applied       map[string]uint32 // what Envoy has, by bucket name
+	applied       map[string]uint32
 	published     bool
 	killLocal     bool
 	killRemote    bool
 	lastDirective time.Time
-	lastTotals    map[string]float64 // virtual cluster counters at last snapshot
-	windowPPM     map[string]uint32  // ratio applied during the current window
+	lastTotals    map[string]float64
+	windowPPM     map[string]uint32
 	lastSnap      time.Time
 }
 
-// NewDataPlane returns a data plane for the Envoy whose admin API is at
-// adminURL (for example http://127.0.0.1:9901).
+// NewDataPlane returns a data plane for the Envoy admin API at adminURL.
 func NewDataPlane(ctx context.Context, adminURL, service string, log *slog.Logger) *DataPlane {
 	d := &DataPlane{
 		admin:      adminURL,
@@ -117,8 +111,7 @@ func (d *DataPlane) KillSwitch() bool {
 	return d.killLocal || d.killRemote
 }
 
-// Apply records a directive and pushes the resulting abort ratios to Envoy.
-// Envoy has no priority tiers here, so the bucket's overall ratio is used.
+// Apply pushes a directive's overall ratios to Envoy.
 func (d *DataPlane) Apply(dir *rlv1.Directive, now time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -156,8 +149,6 @@ func (d *DataPlane) ExpireStale(now time.Time) int {
 	return n
 }
 
-// pushLocked computes what Envoy should enforce and publishes it over RTDS
-// if it changed. Shadow buckets and the kill switch enforce nothing.
 func (d *DataPlane) pushLocked() {
 	want := map[string]uint32{}
 	for name, b := range d.buckets {
@@ -167,14 +158,11 @@ func (d *DataPlane) pushLocked() {
 		}
 		want[name] = p
 	}
-	// Always publish once: Envoy waits for every RTDS layer before it
-	// finishes initializing.
+
 	if d.published && maps.Equal(want, d.applied) {
 		return
 	}
-	// A plain integer runtime value is read by Envoy as a percent out of 100
-	// (anything above 100 means always), so ratios go in as a
-	// FractionalPercent struct with a MILLION denominator.
+
 	fields := map[string]any{}
 	for name, p := range want {
 		fields[RuntimeKey(name)] = map[string]any{"numerator": float64(p), "denominator": "MILLION"}
@@ -188,8 +176,7 @@ func (d *DataPlane) pushLocked() {
 		d.log.Error("publish runtime layer", "err", err)
 		return
 	}
-	// A ratio raised mid-window counts for the rest of it; take the higher
-	// one so the estimate does not under-count offered load.
+
 	for name, p := range want {
 		d.windowPPM[name] = max(d.windowPPM[name], p)
 	}
@@ -227,15 +214,14 @@ func (d *DataPlane) fetchTotals() (map[string]float64, error) {
 		}
 		var v float64
 		if err := json.Unmarshal(st.Value, &v); err != nil {
-			continue // histograms and the like
+			continue
 		}
-		totals[m[1]] += v // the same bucket may appear under several vhosts
+		totals[m[1]] += v
 	}
 	return totals, nil
 }
 
-// Snapshot reads Envoy's counters and turns the window's allowed requests
-// into offered/dropped estimates.
+// Snapshot reads Envoy's counters and estimates the window's usage.
 func (d *DataPlane) Snapshot(nodeID, zone string, now time.Time) (*rlv1.UsageReport, []filter.TierUsage) {
 	totals, err := d.fetchTotals()
 
@@ -246,7 +232,7 @@ func (d *DataPlane) Snapshot(nodeID, zone string, now time.Time) (*rlv1.UsageRep
 		WindowStartUnixMs: d.lastSnap.UnixMilli(), WindowEndUnixMs: now.UnixMilli(),
 	}
 	if err != nil {
-		// Report nothing for this window; the next one covers the gap.
+
 		d.log.Warn("read envoy stats", "err", err)
 		return &rlv1.UsageReport{NodeId: nodeID, Zone: zone}, nil
 	}
@@ -256,7 +242,7 @@ func (d *DataPlane) Snapshot(nodeID, zone string, now time.Time) (*rlv1.UsageRep
 	for name, b := range d.buckets {
 		total := totals[name]
 		allowed := total - d.lastTotals[name]
-		if allowed < 0 { // Envoy restarted
+		if allowed < 0 {
 			allowed = total
 		}
 		d.lastTotals[name] = total
@@ -267,8 +253,7 @@ func (d *DataPlane) Snapshot(nodeID, zone string, now time.Time) (*rlv1.UsageRep
 			offered = allowed / (1 - p)
 		}
 		enforced := offered - allowed
-		// Shadow and kill switch: Envoy enforced nothing; report what the
-		// controller's ratio would have dropped.
+
 		var shadow float64
 		if target := d.target[b.ID]; d.applied[name] == 0 && target > 0 {
 			shadow = offered * float64(target) / 1e6
@@ -288,7 +273,7 @@ func (d *DataPlane) Snapshot(nodeID, zone string, now time.Time) (*rlv1.UsageRep
 			})
 		}
 	}
-	// The next window starts with whatever Envoy enforces now.
+
 	d.windowPPM = maps.Clone(d.applied)
 	return r, detail
 }

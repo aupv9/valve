@@ -11,9 +11,7 @@ import (
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
-// Watch subscribes to policies and the kill switch on two separate streams.
-// onPolicy receives every valid policy set with its config version; an error
-// from it NACKs the update. It returns immediately.
+// Watch subscribes to policies and the kill switch and returns immediately.
 func Watch(ctx context.Context, conn grpc.ClientConnInterface, nodeID string, log *slog.Logger,
 	onPolicy func(pf *policy.File, version uint64) error, onKill func(ks *rlv1.KillSwitch)) {
 	go Subscribe(ctx, conn, Subscription{

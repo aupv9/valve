@@ -1,6 +1,4 @@
-// Command controller computes drop ratios from aggregated usage and pushes
-// them down. Run one per region (-tier regional) and optionally a global tier
-// (-tier global) that regional controllers report to with -global.
+// Command controller computes drop ratios, per region or for the global tier.
 package main
 
 import (
@@ -105,7 +103,7 @@ func run(log *slog.Logger) error {
 			return fmt.Errorf("leader election: %w", err)
 		}
 		elector = le
-		h.SetServing(false) // standby until elected
+		h.SetServing(false)
 	}
 
 	lis, err := net.Listen("tcp", *listen)
@@ -148,8 +146,7 @@ func run(log *slog.Logger) error {
 			leading.Store(false)
 			m.Leader.Set(0)
 		}()
-		// Only the leader reports to the global tier: a standby would report
-		// zeros under the same node id and overwrite the leader's numbers.
+
 		for i, target := range globals {
 			conn, err := upstream.Dial(target, clientCreds)
 			if err != nil {
@@ -192,7 +189,7 @@ func run(log *slog.Logger) error {
 		<-ctx.Done()
 		srv.GracefulStop()
 	}()
-	// Ready only while leading, so a Kubernetes Service routes to the leader.
+
 	admin.Serve(ctx, *adminAddr, admin.Mux(reg, leading.Load), log)
 
 	log.Info("controller listening", "addr", lis.Addr().String(), "tier", t, "shard", *shard, "shards", *shards,

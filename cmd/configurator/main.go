@@ -48,7 +48,7 @@ func validate(paths []string) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("validate needs at least one file or directory")
 	}
-	// Validate as one set: names and matches must be unique across files.
+
 	pf, err := policy.LoadPaths(paths...)
 	if err != nil {
 		return err

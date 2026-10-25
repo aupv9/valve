@@ -43,11 +43,11 @@ buckets:
 	for _, vc := range frag.VirtualClusters {
 		names = append(names, vc.GetName())
 	}
-	// Most specific first; the other service's bucket is left out.
+
 	if got := strings.Join(names, ","); got != "valve_web,valve_pay,valve_any" {
 		t.Fatalf("virtual clusters = %s", got)
 	}
-	// "any" excludes both narrower buckets with one inverted matcher each.
+
 	anyVC := frag.VirtualClusters[2]
 	if len(anyVC.GetHeaders()) != 2 || !anyVC.GetHeaders()[0].GetInvertMatch() || !anyVC.GetHeaders()[1].GetInvertMatch() {
 		t.Fatalf("catch-all headers = %v", anyVC.GetHeaders())
@@ -89,7 +89,6 @@ buckets:
 	}
 }
 
-// fakeEnvoy serves /stats with a settable counter.
 type fakeEnvoy struct {
 	mu    sync.Mutex
 	total float64
@@ -108,7 +107,6 @@ func (f *fakeEnvoy) add(n float64) {
 	f.mu.Unlock()
 }
 
-// runtimeLayer returns the runtime layer currently published over RTDS.
 func runtimeLayer(t *testing.T, d *DataPlane) map[string]float64 {
 	t.Helper()
 	res, ok := d.rtds.GetResources()[RuntimeLayer]
@@ -146,7 +144,7 @@ buckets:
 	web := tbl.Match(policy.Request{Caller: "web", Callee: "checkout"})
 
 	now := time.Now()
-	d.Snapshot("n", "z", now) // baseline
+	d.Snapshot("n", "z", now)
 
 	d.Apply(&rlv1.Directive{TtlMs: 5000, Buckets: []*rlv1.BucketDirective{{BucketId: web.ID, DropPpm: 250_000}}}, now)
 	layer := runtimeLayer(t, d)
@@ -154,7 +152,6 @@ buckets:
 		t.Fatalf("runtime layer = %v, want only web at 250000", layer)
 	}
 
-	// Envoy let 750 through at 25% abort: offered was ~1000.
 	fe.add(750)
 	r, detail := d.Snapshot("n", "z", now.Add(time.Second))
 	if len(r.Buckets) != 1 || r.Buckets[0].Offered != 1000 || r.Buckets[0].Dropped != 250 {
@@ -164,12 +161,11 @@ buckets:
 		t.Fatalf("enforced bucket reported shadow drops: %+v", detail[0])
 	}
 
-	// Kill switch: Envoy enforces nothing, would-drop is reported as shadow.
 	d.SetKillSwitch(true)
 	if runtimeLayer(t, d)[RuntimeKey("web")] != 0 {
 		t.Fatal("kill switch did not zero the runtime key")
 	}
-	d.Snapshot("n", "z", now.Add(2*time.Second)) // window that still had 25%
+	d.Snapshot("n", "z", now.Add(2*time.Second))
 	fe.add(1000)
 	_, detail = d.Snapshot("n", "z", now.Add(3*time.Second))
 	if detail[0].Offered != 1000 || detail[0].Shadow != 250 {
@@ -177,7 +173,6 @@ buckets:
 	}
 	d.SetKillSwitch(false)
 
-	// Directive TTL expiry fails open.
 	if n := d.ExpireStale(now.Add(time.Minute)); n != 1 {
 		t.Fatalf("expired %d buckets, want 1", n)
 	}

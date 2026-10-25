@@ -58,7 +58,7 @@ func serve(args []string, log *slog.Logger) error {
 	}
 	w := &watcher{srv: srv, paths: []string{*policyPath}, log: log, metrics: m}
 	if err := w.reload(); err != nil {
-		return fmt.Errorf("initial policy load: %w", err) // never start without a valid set
+		return fmt.Errorf("initial policy load: %w", err)
 	}
 
 	lis, err := net.Listen("tcp", *listen)
@@ -93,8 +93,6 @@ func serve(args []string, log *slog.Logger) error {
 	return g.Serve(lis)
 }
 
-// watcher re-reads the policy files and publishes every new valid version.
-// An invalid change is logged and the last valid set stays published.
 type watcher struct {
 	srv     *xds.Server
 	paths   []string
@@ -138,7 +136,6 @@ func (w *watcher) run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// killSwitch holds the kill switch state and persists it.
 type killSwitch struct {
 	srv     *xds.Server
 	path    string

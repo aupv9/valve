@@ -1,9 +1,4 @@
 // Package metrics defines the Prometheus metrics of every Valve component.
-//
-// Request rates are exported as counters, per Prometheus convention; take
-// rate() in queries.
-// Per-bucket gauges are published as a full snapshot each cycle, so a bucket
-// removed from the policy disappears instead of freezing at its last value.
 package metrics
 
 import (
@@ -186,8 +181,7 @@ func NewController(reg prometheus.Registerer) *Controller {
 	return c
 }
 
-// ObserveBuckets publishes the directives of one cycle. name maps bucket ids
-// to names; zone is "" for directives shared by every zone.
+// ObserveBuckets publishes the directives of one cycle.
 func (c *Controller) ObserveBuckets(shared []*rlv1.BucketDirective, byZone map[string][]*rlv1.BucketDirective, name func(uint32) string) {
 	var ms []prometheus.Metric
 	add := func(zone string, ds []*rlv1.BucketDirective) {

@@ -3,13 +3,12 @@ package controller
 
 import "math"
 
-// Params tune the feedback loop. The defaults are starting points; tune them
-// with load tests.
+// Params tune the feedback loop.
 type Params struct {
-	Alpha      float64 // EWMA smoothing factor
-	Hysteresis float64 // start dropping only when R > L*(1+Hysteresis)
-	MaxSlew    float64 // max change in p per cycle
-	MaxDrop    float64 // hard clamp on p, limits blast radius of a bad computation
+	Alpha      float64
+	Hysteresis float64
+	MaxSlew    float64
+	MaxDrop    float64
 }
 
 var DefaultParams = Params{
@@ -21,18 +20,14 @@ var DefaultParams = Params{
 
 // BucketState is the controller's small, rebuildable state for one bucket.
 type BucketState struct {
-	smoothed float64 // R̂, smoothed offered RPS
-	p        float64 // current drop ratio
+	smoothed float64
+	p        float64
 	primed   bool
 }
 
-// Step feeds one cycle of offered RPS for a bucket with limit L and returns
-// the new drop ratio:
-//
-//	R̂_t = α·R_t + (1−α)·R̂_{t−1}
-//	p_t = max(0, (R̂_t − L) / R̂_t)
-//
-// with hysteresis on activation, a slew limit, and a clamp at MaxDrop.
+// Step feeds one cycle of offered RPS against limit and returns the new drop
+// ratio: p = max(0, (R̂ − L) / R̂) over the EWMA R̂, with hysteresis, a slew
+// limit and a clamp at MaxDrop.
 func (s *BucketState) Step(offeredRPS, limit float64, prm Params) float64 {
 	if !s.primed {
 		s.smoothed, s.primed = offeredRPS, true
@@ -42,8 +37,7 @@ func (s *BucketState) Step(offeredRPS, limit float64, prm Params) float64 {
 
 	target := 0.0
 	r := s.smoothed
-	// Hysteresis: once dropping, keep the plain formula (it reaches 0 at L);
-	// when idle, require a margin above L before engaging.
+
 	if r > limit && (s.p > 0 || r > limit*(1+prm.Hysteresis)) {
 		target = (r - limit) / r
 	}
@@ -56,8 +50,6 @@ func (s *BucketState) Step(offeredRPS, limit float64, prm Params) float64 {
 	return s.p
 }
 
-// seeded returns a state as if the bucket had been running at offered RPS
-// with drop ratio p.
 func seeded(offeredRPS, p float64) *BucketState {
 	return &BucketState{smoothed: offeredRPS, p: p, primed: true}
 }
@@ -70,10 +62,8 @@ func ToPPM(p float64) uint32 {
 	return uint32(math.Round(min(max(p, 0), 1) * 1_000_000))
 }
 
-// AllocateByPriority splits the load to shed, S = R − L, across priority tiers
-// from lowest to highest. tierRPS is ordered lowest priority first. Each tier
-// gets p = min(1, remaining / R_tier), so a higher tier is touched only after
-// every lower tier is fully dropped.
+// AllocateByPriority sheds R − L from tierRPS, lowest priority first, and
+// returns each tier's drop ratio.
 func AllocateByPriority(tierRPS []float64, limit float64) []float64 {
 	var total float64
 	for _, r := range tierRPS {
@@ -97,14 +87,11 @@ func AllocateByPriority(tierRPS []float64, limit float64) []float64 {
 // Smoothed returns R̂, the smoothed offered RPS.
 func (s *BucketState) Smoothed() float64 { return s.smoothed }
 
-// Tiers holds one value per priority, indexed by rlv1.Priority
-// (index 0, unspecified, is unused).
+// Tiers holds one value per priority, indexed by rlv1.Priority.
 type Tiers [4]float64
 
-// StepTiered advances the bucket with its per-tier offered RPS and returns
-// the overall drop ratio plus a per-tier split of the same shed load. The
-// overall ratio keeps every stability guard of Step; the split only decides
-// who absorbs the shed, lowest priority first.
+// StepTiered is Step on the tiers' total, plus a per-tier split of the shed
+// load, lowest priority first.
 func (s *BucketState) StepTiered(tierRPS Tiers, limit float64, prm Params) (float64, Tiers) {
 	var total float64
 	for _, r := range tierRPS[1:] {
@@ -115,8 +102,7 @@ func (s *BucketState) StepTiered(tierRPS Tiers, limit float64, prm Params) (floa
 	if p == 0 || total == 0 {
 		return p, out
 	}
-	// Scale the raw tier mix to the smoothed rate, then shed p·R̂ from the
-	// bottom up.
+
 	scale := s.smoothed / total
 	scaled := make([]float64, 3)
 	for i := range scaled {

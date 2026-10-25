@@ -28,8 +28,6 @@ buckets:
     scope: global
 `
 
-// newLoop returns a regional loop over loopPolicy and a feed function that
-// records usage into its hub through the same code path a stream uses.
 func newLoop(t *testing.T) (*Loop, *policy.Table, func(node, zone string, bucket string, rps uint64)) {
 	t.Helper()
 	pf, err := policy.Parse(strings.NewReader(loopPolicy))
@@ -43,7 +41,7 @@ func newLoop(t *testing.T) (*Loop, *policy.Table, func(node, zone string, bucket
 	feed := func(node, zone, bucket string, rps uint64) {
 		end := time.Now()
 		hub.Inject(h, &rlv1.UsageReport{
-			NodeId: node + "/" + bucket, Zone: zone, // one report per node carries all buckets
+			NodeId: node + "/" + bucket, Zone: zone,
 			WindowStartUnixMs: end.Add(-time.Second).UnixMilli(), WindowEndUnixMs: end.UnixMilli(),
 			Buckets: []*rlv1.BucketUsage{{BucketId: bucketID(tbl, bucket), Offered: rps}},
 		})
@@ -79,21 +77,20 @@ func run(l *Loop, n int) *Result {
 
 func TestScopes(t *testing.T) {
 	l, tbl, feed := newLoop(t)
-	// Zone z1 sends 150 RPS to each bucket, z2 sends 50.
+
 	for _, b := range []string{"zonal", "regional", "global"} {
 		feed("n1", "z1", b, 150)
 		feed("n2", "z2", b, 50)
 	}
 	res := run(l, 30)
 
-	// Zonal: z1 alone is over (150 vs 100), z2 is under.
 	if got := ppm(res, "z1", bucketID(tbl, "zonal")); got < 330_000 || got > 337_000 {
 		t.Fatalf("zonal z1 ppm = %d, want ~333333", got)
 	}
 	if got := ppm(res, "z2", bucketID(tbl, "zonal")); got != 0 {
 		t.Fatalf("zonal z2 ppm = %d, want 0", got)
 	}
-	// Regional (and global without a global tier): 200 vs 100 = 50% everywhere.
+
 	for _, name := range []string{"regional", "global"} {
 		for _, z := range []string{"z1", "z2"} {
 			if got := ppm(res, z, bucketID(tbl, name)); got < 495_000 || got > 505_000 {
@@ -125,20 +122,17 @@ func TestGlobalRelayAndFallback(t *testing.T) {
 	id := bucketID(tbl, "global")
 	feed("n1", "z1", "global", 300)
 
-	// Global tier says drop 40% and sees 1000 RPS worldwide: share = 0.3.
 	g.Set(0, &rlv1.Directive{TtlMs: 60_000, Buckets: []*rlv1.BucketDirective{{BucketId: id, DropPpm: 400_000, ScopeOfferedRps: 1000}}})
 	if got := ppm(run(l, 1), "z1", id); got != 400_000 {
 		t.Fatalf("relayed ppm = %d, want 400000", got)
 	}
 
-	// Global link lost: fall back to limit × share = 30 RPS against 300 offered.
 	g2 := upstream.NewMerger()
 	l.Global = g2
 	if got := ppm(run(l, 40), "z1", id); got != uint32(DefaultParams.MaxDrop*1e6) {
 		t.Fatalf("fallback ppm = %d, want clamp at MaxDrop (target 0.9)", got)
 	}
 
-	// A region that never heard from the global tier fails open.
 	l2, tbl2, feed2 := newLoop(t)
 	l2.Global = upstream.NewMerger()
 	feed2("n1", "z1", "global", 300)
@@ -152,7 +146,7 @@ func TestGlobalTierAndReport(t *testing.T) {
 	l.Tier = TierGlobal
 	feed("eu", "eu", "global", 120)
 	feed("us", "us", "global", 80)
-	feed("eu", "eu", "regional", 1000) // not the global tier's business
+	feed("eu", "eu", "regional", 1000)
 	res := run(l, 30)
 	if len(res.Shared) != 1 || res.Shared[0].BucketId != bucketID(tbl, "global") {
 		t.Fatalf("global tier computed %v", res.Shared)
@@ -161,7 +155,6 @@ func TestGlobalTierAndReport(t *testing.T) {
 		t.Fatalf("global directive = %v, want ~50%% and scope ~200 rps", d)
 	}
 
-	// A regional controller reports only its global buckets upward.
 	r, _, feedR := newLoop(t)
 	feedR("n1", "z1", "global", 10)
 	feedR("n1", "z1", "regional", 10)

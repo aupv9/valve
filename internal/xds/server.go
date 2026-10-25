@@ -1,7 +1,4 @@
-// Package xds delivers Valve configuration over the xDS protocol (ADS,
-// state of the world): the configurator serves it, agents and controllers
-// subscribe. Each resource type rides its own stream, so the kill switch
-// never waits behind a large policy update.
+// Package xds serves and subscribes to Valve's policies and kill switch over ADS.
 package xds
 
 import (
@@ -46,7 +43,7 @@ func NewServer(ctx context.Context) *Server {
 	}
 	s.xds = server.NewServer(ctx, mux, server.CallbackFuncs{})
 	if err := s.SetKillSwitch(&rlv1.KillSwitch{}); err != nil {
-		panic(err) // a fresh cache accepts any resource
+		panic(err)
 	}
 	return s
 }
@@ -73,8 +70,7 @@ func update(c *cache.LinearCache, name string, res types.Resource) error {
 	return nil
 }
 
-// ServerOptions are the gRPC options an xDS server needs: policy sets can be
-// larger than gRPC's 4 MiB default message size.
+// ServerOptions raise gRPC's message size limit for large policy sets.
 func ServerOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{grpc.MaxRecvMsgSize(maxResourceBytes), grpc.MaxSendMsgSize(maxResourceBytes)}
 }

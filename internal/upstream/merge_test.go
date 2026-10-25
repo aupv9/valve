@@ -20,11 +20,10 @@ func TestMergerUnionAndExpiry(t *testing.T) {
 	if len(d.Buckets) != 2 || !d.KillSwitch || d.ConfigVersion != 2 {
 		t.Fatalf("merged = %v", d)
 	}
-	if d.TtlMs != 2000 { // shard 0 has 2s left
+	if d.TtlMs != 2000 {
 		t.Fatalf("ttl = %d, want 2000", d.TtlMs)
 	}
 
-	// Shard 0 expires: its bucket disappears instead of being refreshed.
 	now = now.Add(3 * time.Second)
 	if _, ok := m.Bucket(1); ok {
 		t.Fatal("expired shard's bucket still merged")

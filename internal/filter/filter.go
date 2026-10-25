@@ -1,5 +1,4 @@
-// Package filter is the sidecar hot path: match, count, and drop by ratio.
-// It never blocks on the network; directives arrive asynchronously.
+// Package filter is the in-process hot path: match, count, and drop by ratio.
 package filter
 
 import (
@@ -21,19 +20,18 @@ const (
 	Reject429
 )
 
-// tierState holds one priority tier of a bucket.
 type tierState struct {
-	offered counter.Sharded // offered load: includes requests about to be dropped
-	dropped counter.Sharded // sampled for dropping, whether enforced or not
-	shadow  counter.Sharded // sampled but let through (shadow mode or kill switch)
+	offered counter.Sharded
+	dropped counter.Sharded
+	shadow  counter.Sharded
 	dropPPM atomic.Uint32
 }
 
 type bucketState struct {
 	bucket  *policy.Bucket
-	tiers   [4]tierState // indexed by rlv1.Priority; 0 is unused
+	tiers   [4]tierState
 	shadow  atomic.Bool
-	expires atomic.Int64 // unix nanos; directive is ignored after this (fail-open)
+	expires atomic.Int64
 }
 
 type compiled struct {
@@ -44,10 +42,10 @@ type compiled struct {
 // Filter makes per-request decisions. Safe for concurrent use.
 type Filter struct {
 	cur        atomic.Pointer[compiled]
-	killLocal  atomic.Bool  // from the config channel (xDS)
-	killRemote atomic.Bool  // from the last directive
-	directive  atomic.Int64 // unix nanos of the last directive
-	mu         sync.Mutex   // serializes config swaps and snapshots
+	killLocal  atomic.Bool
+	killRemote atomic.Bool
+	directive  atomic.Int64
+	mu         sync.Mutex
 	lastSnap   time.Time
 }
 
@@ -57,8 +55,7 @@ func New() *Filter {
 	return f
 }
 
-// Decide is the per-request path: no locks, no network, integer math only.
-// req.Priority picks the tier; empty means the bucket's default.
+// Decide returns the verdict for one request; an empty priority means the bucket's default.
 func (f *Filter) Decide(req policy.Request) Verdict {
 	c := f.cur.Load()
 	b := c.table.Match(req)
@@ -84,8 +81,7 @@ func (f *Filter) Decide(req policy.Request) Verdict {
 	return Reject429
 }
 
-// SetTable installs a new config version. Counters and ratios of buckets that
-// survive the swap are carried over so reporting stays continuous.
+// SetTable installs a config version, keeping state of surviving buckets.
 func (f *Filter) SetTable(t *policy.Table) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -106,8 +102,7 @@ func (f *Filter) SetTable(t *policy.Table) {
 // Version returns the config version in use.
 func (f *Filter) Version() uint64 { return f.cur.Load().table.Version }
 
-// SetKillSwitch sets the kill switch received on the config channel. While
-// either it or the directive's kill switch is on, every bucket is shadow.
+// SetKillSwitch sets the kill switch received over xDS.
 func (f *Filter) SetKillSwitch(on bool) { f.killLocal.Store(on) }
 
 // KillSwitch reports whether the kill switch is in effect.
@@ -148,9 +143,7 @@ func (f *Filter) LastDirective() time.Time {
 	return time.Time{}
 }
 
-// ExpireStale resets ratios whose directive TTL has passed (fail-open).
-// Called from the sync loop, not the hot path. Returns how many buckets were
-// reset.
+// ExpireStale fails open buckets whose directive expired and returns how many.
 func (f *Filter) ExpireStale(now time.Time) int {
 	n := 0
 	for _, s := range f.cur.Load().states {
@@ -178,13 +171,12 @@ type TierUsage struct {
 	Bucket   *policy.Bucket
 	Priority rlv1.Priority
 	Offered  uint64
-	Dropped  uint64 // sampled for dropping, enforced or not
-	Shadow   uint64 // sampled but let through
-	DropPPM  uint32 // ratio in effect at snapshot time
+	Dropped  uint64
+	Shadow   uint64
+	DropPPM  uint32
 }
 
-// Snapshot returns usage since the previous Snapshot as a report, plus the
-// per-tier numbers for metrics.
+// Snapshot returns usage since the previous call, as a report and per tier.
 func (f *Filter) Snapshot(nodeID, zone string, now time.Time) (*rlv1.UsageReport, []TierUsage) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

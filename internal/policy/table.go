@@ -5,11 +5,10 @@ type Request struct {
 	Caller   string
 	Callee   string
 	Endpoint string
-	Priority Priority // shedding tier; empty = the bucket's default
+	Priority Priority
 }
 
 // Table is an immutable, precompiled lookup from request to bucket.
-// It is swapped atomically when a new config version arrives.
 type Table struct {
 	Version uint64
 	byMatch map[Match]*Bucket
@@ -31,8 +30,7 @@ func Compile(pf *File, version uint64) *Table {
 	return t
 }
 
-// Match returns the most specific bucket for req, or nil. Specificity order:
-// caller+endpoint, caller only, endpoint only, callee only.
+// Match returns the most specific bucket for req, or nil.
 func (t *Table) Match(req Request) *Bucket {
 	for _, m := range [...]Match{
 		{Caller: req.Caller, Callee: req.Callee, Endpoint: req.Endpoint},

@@ -62,7 +62,7 @@ func TestRatesLatestPerNodeAndStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Two reports from node a: only the latest counts. Node b is stale.
+
 	for _, r := range []*rlv1.UsageReport{
 		report("a", "z1", now.Add(-time.Second), 999),
 		report("a", "z1", now, 100),
@@ -99,7 +99,7 @@ func TestBroadcastPerZoneAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A new peer gets the replayed directive for the zone it announces.
+
 	if err := s.Send(report("a", "zone-ab", time.Now(), 1)); err != nil {
 		t.Fatal(err)
 	}

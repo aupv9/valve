@@ -1,6 +1,4 @@
-// Command aggregator runs per zone: it sums usage from sidecars, forwards it
-// to the regional controller shards, and relays their merged directives back
-// down. Stateless; run several replicas per zone.
+// Command aggregator sums a zone's usage and relays directives back down.
 package main
 
 import (

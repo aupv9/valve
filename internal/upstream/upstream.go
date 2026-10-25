@@ -1,5 +1,4 @@
-// Package upstream runs the client side of the Sync stream: push a usage
-// report every cycle, apply directives as they arrive, reconnect on failure.
+// Package upstream runs the client side of the Sync stream.
 package upstream
 
 import (
@@ -15,18 +14,15 @@ import (
 )
 
 type Config struct {
-	Interval    time.Duration            // report cycle, ~1s
-	Report      func() *rlv1.UsageReport // called once per cycle
-	OnDirective func(*rlv1.Directive)    // called for each directive received
-	OnTick      func(now time.Time)      // optional, e.g. TTL expiry
-	OnState     func(connected bool)     // optional, e.g. a metric
+	Interval    time.Duration
+	Report      func() *rlv1.UsageReport
+	OnDirective func(*rlv1.Directive)
+	OnTick      func(now time.Time)
+	OnState     func(connected bool)
 	Log         *slog.Logger
 }
 
-// Dial creates a client for one upstream target. Targets that resolve to
-// several addresses (for example dns:///controller:9091 over a headless
-// Service) are balanced round robin, so a stream refused by a standby
-// replica is retried on another address.
+// Dial creates a round-robin client for one upstream target.
 func Dial(target string, creds credentials.TransportCredentials) (*grpc.ClientConn, error) {
 	return grpc.NewClient(target,
 		grpc.WithTransportCredentials(creds),
@@ -35,9 +31,7 @@ func Dial(target string, creds credentials.TransportCredentials) (*grpc.ClientCo
 	)
 }
 
-// Run keeps a Sync stream open to conn until ctx is done. OnTick runs on its
-// own ticker, independent of the stream, so TTLs still expire and fail open
-// while the upstream is unreachable.
+// Run keeps a Sync stream open until ctx is done; OnTick runs even while disconnected.
 func Run(ctx context.Context, conn grpc.ClientConnInterface, cfg Config) {
 	if cfg.OnTick != nil {
 		go func() {
@@ -63,7 +57,7 @@ func Run(ctx context.Context, conn grpc.ClientConnInterface, cfg Config) {
 			return
 		}
 		if time.Since(start) > 10*cfg.Interval {
-			backoff = 100 * time.Millisecond // was healthy for a while
+			backoff = 100 * time.Millisecond
 		}
 		cfg.Log.Warn("upstream stream ended, reconnecting", "err", err, "backoff", backoff)
 		select {
@@ -82,7 +76,7 @@ func runOnce(ctx context.Context, client rlv1.RateLimitControlClient, cfg Config
 	if err != nil {
 		return err
 	}
-	// Report at once so the upstream learns our zone without waiting a cycle.
+
 	if err := stream.Send(cfg.Report()); err != nil {
 		return err
 	}

@@ -16,13 +16,10 @@ import (
 type Tier string
 
 const (
-	// TierRegional receives usage from the aggregators of one region. It
-	// computes zonal and regional buckets itself. Global buckets come from
-	// the global tier when Global is set, otherwise they are treated as
-	// regional (single-region deployment).
+	// TierRegional computes a region's buckets; global ones come from Global
+	// when set, otherwise they are treated as regional.
 	TierRegional Tier = "regional"
-	// TierGlobal receives usage from regional controllers and computes
-	// global buckets only.
+	// TierGlobal computes global buckets from regional controllers' usage.
 	TierGlobal Tier = "global"
 )
 
@@ -31,27 +28,25 @@ type Loop struct {
 	Hub      *hub.Hub
 	Params   Params
 	Interval time.Duration
-	TTL      time.Duration // directive lifetime downstream; > a few intervals
+	TTL      time.Duration
 	Tier     Tier
 
-	// Owns reports whether this instance computes a bucket (hash sharding).
-	// nil means every bucket.
+	// Owns selects this shard's buckets; nil means every bucket.
 	Owns func(bucketID uint32) bool
-	// Global holds directives from the global tier (regional tier only).
-	// nil means no global tier.
+	// Global holds the global tier's directives; nil means no global tier.
 	Global *upstream.Merger
 
 	mu     sync.Mutex
 	table  *policy.Table
 	states map[stateKey]*BucketState
-	shares map[uint32]float64 // this region's last share of each global bucket
+	shares map[uint32]float64
 	kill   bool
-	rates  map[hub.Key]hub.Rate // usage seen by the last Tick
+	rates  map[hub.Key]hub.Rate
 }
 
 type stateKey struct {
 	bucket uint32
-	zone   string // only for zonal buckets
+	zone   string
 }
 
 // SetTable installs a new policy version. State of surviving buckets is kept.
@@ -79,8 +74,8 @@ func (l *Loop) SetKillSwitch(on bool) {
 
 // Result is what one Tick computed.
 type Result struct {
-	Shared  []*rlv1.BucketDirective            // same for every zone
-	ByZone  map[string][]*rlv1.BucketDirective // zonal buckets
+	Shared  []*rlv1.BucketDirective
+	ByZone  map[string][]*rlv1.BucketDirective
 	Kill    bool
 	Version uint64
 }
@@ -118,8 +113,6 @@ func (l *Loop) compute(rates map[hub.Key]hub.Rate) *Result {
 	}
 	res.Version = l.table.Version
 
-	// Offered RPS per bucket, per zone and per tier. Reports without a
-	// priority count toward the bucket's default tier.
 	type zoneTiers map[string]*Tiers
 	usage := map[uint32]zoneTiers{}
 	for k, r := range rates {
@@ -171,7 +164,7 @@ func (l *Loop) compute(rates map[hub.Key]hub.Rate) *Result {
 			}
 			for k := range l.states {
 				if k.bucket == b.ID && k.zone != "" {
-					zones[k.zone] = true // keep decaying zones that went quiet
+					zones[k.zone] = true
 				}
 			}
 			for z := range zones {
@@ -185,7 +178,7 @@ func (l *Loop) compute(rates map[hub.Key]hub.Rate) *Result {
 		case b.Scope == policy.ScopeGlobal && l.Global != nil:
 			res.Shared = append(res.Shared, l.fromGlobal(b, total(b.ID)))
 
-		default: // regional, or global in a single-region deployment
+		default:
 			res.Shared = append(res.Shared, l.step(stateKey{bucket: b.ID}, total(b.ID), limit))
 		}
 	}
@@ -212,9 +205,6 @@ func directive(id uint32, p float64, tiers Tiers, scopeRPS float64) *rlv1.Bucket
 	return d
 }
 
-// fromGlobal relays the global tier's directive for a global bucket. If the
-// global tier is unreachable, the region falls back to a regional limit of
-// limit × its last known traffic share, or fails open if it never had one.
 func (l *Loop) fromGlobal(b *policy.Bucket, local Tiers) *rlv1.BucketDirective {
 	var localRPS float64
 	for _, r := range local[1:] {
@@ -224,20 +214,18 @@ func (l *Loop) fromGlobal(b *policy.Bucket, local Tiers) *rlv1.BucketDirective {
 		if g.GetScopeOfferedRps() > 0 {
 			l.shares[b.ID] = min(localRPS/g.GetScopeOfferedRps(), 1)
 		}
-		// Track the global ratio so a fallback starts where the global tier
-		// left off instead of ramping up from zero.
+
 		l.states[stateKey{bucket: b.ID}] = seeded(localRPS, float64(g.GetDropPpm())/1e6)
 		return g
 	}
 	share, ok := l.shares[b.ID]
 	if !ok || share == 0 {
-		return &rlv1.BucketDirective{BucketId: b.ID} // fail open
+		return &rlv1.BucketDirective{BucketId: b.ID}
 	}
 	return l.step(stateKey{bucket: b.ID}, local, float64(b.LimitRPS)*share)
 }
 
-// GlobalReport is the usage a regional controller sends to the global tier:
-// every global bucket, summed over the region's zones.
+// GlobalReport returns the region's usage of global buckets for the global tier.
 func (l *Loop) GlobalReport(nodeID, region string, start, end time.Time) *rlv1.UsageReport {
 	l.mu.Lock()
 	rates, table := l.rates, l.table

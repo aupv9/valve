@@ -43,7 +43,6 @@ func newCA(t *testing.T) *ca {
 	return &ca{cert: cert, key: key, pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}
 }
 
-// issue writes a leaf certificate for name into dir and returns a Config.
 func (c *ca) issue(t *testing.T, dir, name string) *Config {
 	t.Helper()
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -126,7 +125,7 @@ func TestMutualTLS(t *testing.T) {
 	}
 
 	stranger := newCA(t).issue(t, t.TempDir(), "aggregator")
-	stranger.CA = client.CA // trusts the server, but its own cert is foreign
+	stranger.CA = client.CA
 	stranger.ServerName = "controller"
 	if err := call(t, addr, stranger, false); err == nil {
 		t.Fatal("client with a certificate from another CA was accepted")

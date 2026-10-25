@@ -96,7 +96,7 @@ func TestTierRatios(t *testing.T) {
 	if got := reject(f, high, 1000); got != 0 {
 		t.Fatalf("high tier rejected %d/1000, want none", got)
 	}
-	// Medium is not listed, so it falls back to drop_ppm.
+
 	if got := reject(f, med, 10_000); got < 4500 || got > 5500 {
 		t.Fatalf("medium tier rejected %d/10000, want ~5000", got)
 	}
@@ -144,7 +144,7 @@ func TestShadowAndKillSwitchNeverReject(t *testing.T) {
 	for _, u := range detail {
 		shadow += u.Shadow
 	}
-	if shadow != 3 { // shadow bucket, local kill switch, directive kill switch
+	if shadow != 3 {
 		t.Fatalf("shadow would-drop count = %d, want 3", shadow)
 	}
 }

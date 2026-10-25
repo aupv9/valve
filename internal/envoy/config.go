@@ -1,14 +1,5 @@
-// Package envoy integrates Valve with an unmodified Envoy sidecar.
-//
-// Config generates, per bucket of the local service, a fault filter that
-// aborts with 429 at a ratio read from the runtime key
-// valve.<bucket>.abort_ppm, and a virtual cluster that counts the requests
-// let through. DataPlane is the agent side: it serves those runtime keys over
-// RTDS and reads the virtual cluster counters from the admin API.
-//
-// Envoy cannot express "most specific bucket wins" for every overlap. Where a
-// broader bucket can exclude a narrower one with one inverted header match it
-// does; otherwise Config warns, and a request may be sampled by both buckets.
+// Package envoy generates Envoy config for Valve buckets and drives Envoy over
+// RTDS and its admin API.
 package envoy
 
 import (
@@ -38,8 +29,7 @@ const (
 	VirtualClusterPrefix = "valve_"
 	// RuntimeLayer is the RTDS layer name Envoy must subscribe to.
 	RuntimeLayer = "valve"
-	// DefaultRetryAfter is the Retry-After value, in seconds, sent with 429:
-	// one control cycle, after which the drop ratio may have changed.
+	// DefaultRetryAfter is the Retry-After seconds sent with 429.
 	DefaultRetryAfter = 1
 )
 
@@ -50,25 +40,23 @@ func RuntimeKey(bucket string) string { return "valve." + bucket + ".abort_ppm" 
 type CallerMatch struct {
 	// Header holds the caller name verbatim, set by a trusted gateway.
 	Header string
-	// SPIFFE matches the service account in the client certificate URI that
-	// Envoy forwards in x-forwarded-client-cert (…/sa/<caller>).
+	// SPIFFE matches the service account in x-forwarded-client-cert instead.
 	SPIFFE bool
 }
 
 // Options tune the generated configuration.
 type Options struct {
 	Caller CallerMatch
-	// RetryAfter is the Retry-After header value in seconds on 429
-	// responses; 0 means DefaultRetryAfter.
+	// RetryAfter is in seconds; 0 means DefaultRetryAfter.
 	RetryAfter int
 }
 
 // Fragment is the Envoy configuration for one service's buckets.
 type Fragment struct {
-	HTTPFilters      []*hcmv3.HttpFilter       // before envoy.filters.http.router
-	VirtualClusters  []*routev3.VirtualCluster // in the service's virtual host
-	LocalReplyConfig *hcmv3.LocalReplyConfig   // in the HTTP connection manager
-	Buckets          []*policy.Bucket          // most specific first
+	HTTPFilters      []*hcmv3.HttpFilter
+	VirtualClusters  []*routev3.VirtualCluster
+	LocalReplyConfig *hcmv3.LocalReplyConfig
+	Buckets          []*policy.Bucket
 	Warnings         []string
 }
 
@@ -88,7 +76,7 @@ func Config(pf *policy.File, service string, opts Options) (*Fragment, error) {
 			bs = append(bs, &pf.Buckets[i])
 		}
 	}
-	// Envoy uses the first matching virtual cluster.
+
 	slices.SortStableFunc(bs, func(a, b *policy.Bucket) int { return specificity(b) - specificity(a) })
 
 	frag := &Fragment{Buckets: bs, LocalReplyConfig: retryAfter(opts.RetryAfter)}
@@ -131,9 +119,6 @@ func Config(pf *policy.File, service string, opts Options) (*Fragment, error) {
 	return frag, nil
 }
 
-// retryAfter adds Retry-After to local replies for injected aborts (response
-// flag FI). The fault filter cannot add headers itself, and the flag keeps
-// other local replies, such as 503s, untouched.
 func retryAfter(seconds int) *hcmv3.LocalReplyConfig {
 	return &hcmv3.LocalReplyConfig{Mappers: []*hcmv3.ResponseMapper{{
 		Filter: &accesslogv3.AccessLogFilter{FilterSpecifier: &accesslogv3.AccessLogFilter_ResponseFlagFilter{
@@ -157,8 +142,6 @@ func specificity(b *policy.Bucket) int {
 	return n
 }
 
-// narrower reports whether every request matching a also matches b, and a
-// is strictly more specific.
 func narrower(a, b policy.Match) bool {
 	if a == b {
 		return false
@@ -166,8 +149,6 @@ func narrower(a, b policy.Match) bool {
 	return (b.Caller == "" || b.Caller == a.Caller) && (b.Endpoint == "" || b.Endpoint == a.Endpoint)
 }
 
-// exclusion returns the inverted matcher that removes a's requests from b,
-// possible when a adds exactly one condition to b.
 func exclusion(a, b policy.Match, cm CallerMatch) (*routev3.HeaderMatcher, bool) {
 	extraCaller := a.Caller != "" && b.Caller == ""
 	extraEndpoint := a.Endpoint != "" && b.Endpoint == ""
@@ -205,8 +186,6 @@ func callerMatcher(caller string, cm CallerMatch) *routev3.HeaderMatcher {
 	return headerMatcher(cm.Header, &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Exact{Exact: caller}})
 }
 
-// endpointMatcher matches a path prefix when the endpoint starts with "/"
-// (HTTP routes), otherwise a gRPC method name at the end of the path.
 func endpointMatcher(endpoint string) *routev3.HeaderMatcher {
 	if strings.HasPrefix(endpoint, "/") {
 		return headerMatcher(":path", &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Prefix{Prefix: endpoint}})
@@ -232,8 +211,7 @@ func regexpQuote(s string) string {
 	return b.String()
 }
 
-// YAML renders the fragment as YAML ready to paste into an Envoy config or
-// an Istio EnvoyFilter patch.
+// YAML renders the fragment for an Envoy config or EnvoyFilter patch.
 func (f *Fragment) YAML() ([]byte, error) {
 	var filters, vcs []any
 	for _, x := range f.HTTPFilters {
@@ -261,7 +239,6 @@ func (f *Fragment) YAML() ([]byte, error) {
 	})
 }
 
-// plain converts a proto message to plain Go values with proto field names.
 func plain(m proto.Message) (any, error) {
 	b, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(m)
 	if err != nil {

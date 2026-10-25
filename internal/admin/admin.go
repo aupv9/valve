@@ -35,8 +35,7 @@ func Mux(reg *prometheus.Registry, ready func() bool) *http.ServeMux {
 	return mux
 }
 
-// Serve runs the admin server on addr until ctx is done. An empty addr
-// disables it.
+// Serve runs the admin server until ctx is done; an empty addr disables it.
 func Serve(ctx context.Context, addr string, h http.Handler, log *slog.Logger) {
 	if addr == "" {
 		return

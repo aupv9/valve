@@ -47,7 +47,7 @@ func TestLeaseOneLeaderAndFailover(t *testing.T) {
 		t.Fatal("b became leader while a holds the lease")
 	}
 
-	cancelA() // a releases the lease on cancel
+	cancelA()
 	<-doneA
 	waitFor(t, bLed.Load)
 }

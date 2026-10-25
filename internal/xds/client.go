@@ -21,18 +21,16 @@ type Subscription struct {
 	TypeURL string
 	Name    string
 	NodeID  string
-	// Apply validates and installs the resource. Returning an error NACKs
-	// the update and the caller keeps its last good config.
+	// Apply installs the resource; an error NACKs it.
 	Apply func(*anypb.Any) error
 	Log   *slog.Logger
 }
 
-// Subscribe keeps an ADS stream open until ctx is done, reconnecting with
-// backoff. Updates are applied in order; each is ACKed or NACKed.
+// Subscribe keeps an ADS stream open until ctx is done.
 func Subscribe(ctx context.Context, conn grpc.ClientConnInterface, s Subscription) {
 	client := discoverygrpc.NewAggregatedDiscoveryServiceClient(conn)
 	backoff := 100 * time.Millisecond
-	acked := "" // last version we accepted, re-sent on reconnect
+	acked := ""
 	for ctx.Err() == nil {
 		start := time.Now()
 		err := s.stream(ctx, client, &acked)
@@ -100,7 +98,7 @@ func (s Subscription) apply(resp *discoverygrpc.DiscoveryResponse) error {
 			return s.Apply(r)
 		}
 	}
-	return nil // resource not published yet
+	return nil
 }
 
 // PolicySetHandler adapts a typed handler to Subscription.Apply.

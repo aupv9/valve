@@ -6,24 +6,20 @@ import (
 	"sync/atomic"
 )
 
-const shards = 16 // power of two
+const shards = 16
 
-// shard is padded to a cache line so shards updated by different cores don't
-// false-share.
 type shard struct {
 	n atomic.Uint64
 	_ [56]byte
 }
 
-// Sharded is a counter split across shards to avoid a single contended
-// cache line when many goroutines increment it. The zero value is ready to use.
+// Sharded is a contention-free counter. The zero value is ready to use.
 type Sharded struct {
 	s    [shards]shard
-	last atomic.Uint64 // total at the previous Delta call
+	last atomic.Uint64
 }
 
-// Inc adds one. Shard choice uses the runtime's per-thread random source,
-// which is cheap and needs no lock.
+// Inc adds one.
 func (c *Sharded) Inc() {
 	c.s[rand.Uint32()&(shards-1)].n.Add(1)
 }
@@ -37,8 +33,7 @@ func (c *Sharded) Load() uint64 {
 	return t
 }
 
-// Delta returns the increase since the previous Delta call. It must be called
-// from a single goroutine (the reporting loop).
+// Delta returns the increase since the previous call. Not safe for concurrent use.
 func (c *Sharded) Delta() uint64 {
 	t := c.Load()
 	return t - c.last.Swap(t)

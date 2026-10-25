@@ -9,8 +9,6 @@ import (
 	"github.com/aupv9/valve/internal/policy"
 )
 
-// envoyConfig prints the Envoy fault filters and virtual clusters for one
-// service's buckets.
 func envoyConfig(args []string) error {
 	flags := flag.NewFlagSet("envoy", flag.ExitOnError)
 	policyPath := flags.String("policy", "policies", "policy file or directory")

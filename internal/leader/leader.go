@@ -12,8 +12,7 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
-// Elector runs lead while this replica is the leader. lead's context is
-// cancelled when leadership is lost. Run returns when ctx is done.
+// Elector runs lead while this replica is the leader, until ctx is done.
 type Elector interface {
 	Run(ctx context.Context, lead func(ctx context.Context))
 }
@@ -27,13 +26,13 @@ func (Always) Run(ctx context.Context, lead func(ctx context.Context)) { lead(ct
 type Lease struct {
 	Client    kubernetes.Interface
 	Namespace string
-	Name      string // one lease per (tier, shard), e.g. valve-controller-regional-0
-	Identity  string // this replica, usually the pod name
+	Name      string
+	Identity  string
 	Log       *slog.Logger
 
-	LeaseDuration time.Duration // default 15s
-	RenewDeadline time.Duration // default 10s
-	RetryPeriod   time.Duration // default 2s
+	LeaseDuration time.Duration
+	RenewDeadline time.Duration
+	RetryPeriod   time.Duration
 }
 
 // InCluster returns a Lease elector using the pod's service account.
@@ -70,7 +69,7 @@ func (l *Lease) Run(ctx context.Context, lead func(ctx context.Context)) {
 			},
 		},
 	}
-	// RunOrDie returns when leadership is lost; stand for election again.
+
 	for ctx.Err() == nil {
 		leaderelection.RunOrDie(ctx, cfg)
 	}

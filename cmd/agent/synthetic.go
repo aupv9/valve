@@ -33,7 +33,7 @@ func loadRequest(spec string, pf *policy.File) (policy.Request, error) {
 }
 
 func generateLoad(ctx context.Context, f *filter.Filter, req policy.Request, rps int, log *slog.Logger) {
-	const batches = 100 // spread each second over 10ms batches
+	const batches = 100
 	t := time.NewTicker(time.Second / batches)
 	defer t.Stop()
 	var allowed, rejected, tick int

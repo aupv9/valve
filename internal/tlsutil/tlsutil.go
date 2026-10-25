@@ -1,6 +1,4 @@
 // Package tlsutil builds mutual-TLS gRPC credentials shared by every binary.
-// Each process presents one workload certificate both as a server and as a
-// client, and only accepts peers signed by the configured CA.
 package tlsutil
 
 import (
@@ -22,7 +20,7 @@ type Config struct {
 	Cert       string
 	Key        string
 	CA         string
-	ServerName string // overrides the name checked in server certificates
+	ServerName string
 }
 
 // RegisterFlags adds -tls-cert, -tls-key, -tls-ca and -tls-server-name.
@@ -45,8 +43,7 @@ func (c *Config) check() error {
 	return nil
 }
 
-// ServerCredentials returns credentials that require a client certificate
-// signed by the CA. Without mTLS configured it returns insecure credentials.
+// ServerCredentials requires a client certificate signed by the CA; insecure if unconfigured.
 func (c *Config) ServerCredentials() (credentials.TransportCredentials, error) {
 	if !c.Enabled() {
 		return insecure.NewCredentials(), nil
@@ -70,8 +67,7 @@ func (c *Config) ServerCredentials() (credentials.TransportCredentials, error) {
 	}), nil
 }
 
-// ClientCredentials returns credentials that present the certificate and
-// verify the server against the CA. Without mTLS it returns insecure ones.
+// ClientCredentials presents the certificate and verifies the server; insecure if unconfigured.
 func (c *Config) ClientCredentials() (credentials.TransportCredentials, error) {
 	if !c.Enabled() {
 		return insecure.NewCredentials(), nil
@@ -107,8 +103,6 @@ func loadPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// keyPair re-reads the certificate when its files change, so rotated
-// certificates (cert-manager, SPIRE) are picked up without a restart.
 type keyPair struct {
 	cert, key string
 
@@ -139,7 +133,7 @@ func (kp *keyPair) get() (*tls.Certificate, error) {
 	mod, err := latestMod(kp.cert, kp.key)
 	if err != nil {
 		if kp.cur != nil {
-			return kp.cur, nil // keep serving the last good pair
+			return kp.cur, nil
 		}
 		return nil, err
 	}
@@ -149,7 +143,7 @@ func (kp *keyPair) get() (*tls.Certificate, error) {
 	c, err := tls.LoadX509KeyPair(kp.cert, kp.key)
 	if err != nil {
 		if kp.cur != nil {
-			return kp.cur, nil // mid-rotation; try again later
+			return kp.cur, nil
 		}
 		return nil, fmt.Errorf("load key pair: %w", err)
 	}

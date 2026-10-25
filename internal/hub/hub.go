@@ -1,6 +1,4 @@
-// Package hub is the downstream side shared by aggregators and controllers:
-// it accepts Sync streams, keeps the latest usage report of every node and
-// fans Directives out.
+// Package hub serves Sync streams for aggregators and controllers.
 package hub
 
 import (
@@ -31,14 +29,14 @@ type Builder func(zone string) *rlv1.Directive
 
 type nodeReport struct {
 	zone       string
-	start, end int64 // unix ms
+	start, end int64
 	buckets    []*rlv1.BucketUsage
 }
 
 type peer struct {
-	zone string // guarded by Hub.mu; learned from the peer's reports
+	zone string
 	ch   chan *rlv1.Directive
-	kick chan struct{} // closed when the hub stops serving
+	kick chan struct{}
 }
 
 // Hub implements rlv1.RateLimitControlServer.
@@ -51,13 +49,11 @@ type Hub struct {
 	mu      sync.Mutex
 	nodes   map[string]*nodeReport
 	peers   map[*peer]struct{}
-	build   Builder // last builder, replayed to new peers
+	build   Builder
 	serving bool
 }
 
-// New returns a serving Hub. Reports whose window ended more than staleAfter
-// ago are ignored, so a lagging node or zone is dropped rather than counted
-// with old numbers.
+// New returns a serving Hub that ignores reports older than staleAfter.
 func New(staleAfter time.Duration) *Hub {
 	return &Hub{
 		staleAfter: staleAfter,
@@ -68,9 +64,7 @@ func New(staleAfter time.Duration) *Hub {
 	}
 }
 
-// SetServing controls whether the hub accepts streams. Turning it off ends
-// every open stream with codes.Unavailable so peers reconnect elsewhere
-// (used by controller replicas that are not the leader).
+// SetServing turns the hub on or off; off ends open streams with Unavailable.
 func (h *Hub) SetServing(on bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -141,20 +135,19 @@ func (h *Hub) record(p *peer, r *rlv1.UsageReport) {
 	if p.zone != r.GetZone() {
 		p.zone = r.GetZone()
 		if h.build != nil {
-			offer(p.ch, h.build(p.zone)) // directive for the zone it just announced
+			offer(p.ch, h.build(p.zone))
 		}
 	}
 	if end <= start {
-		return // no usable window
+		return
 	}
 	if old, ok := h.nodes[r.GetNodeId()]; ok && old.end >= end {
-		return // out of order
+		return
 	}
 	h.nodes[r.GetNodeId()] = &nodeReport{zone: r.GetZone(), start: start, end: end, buckets: r.GetBuckets()}
 }
 
-// Rates returns the current rate of every series: the latest fresh report
-// of each node, converted to per-second rates and summed.
+// Rates sums the latest fresh report of every node, per second.
 func (h *Hub) Rates() map[Key]Rate {
 	cutoff := h.now().Add(-h.staleAfter).UnixMilli()
 	out := map[Key]Rate{}
@@ -177,8 +170,7 @@ func (h *Hub) Rates() map[Key]Rate {
 	return out
 }
 
-// Broadcast sends every peer the directive for its zone. A slow peer gets
-// only the latest directive: an older pending one is replaced, never queued.
+// Broadcast sends every peer the directive for its zone.
 func (h *Hub) Broadcast(build Builder) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -199,8 +191,6 @@ func (h *Hub) BroadcastAll(d *rlv1.Directive) {
 	h.Broadcast(func(string) *rlv1.Directive { return d })
 }
 
-// offer replaces any pending directive with d. Caller holds Hub.mu, which
-// makes it the only sender on ch.
 func offer(ch chan *rlv1.Directive, d *rlv1.Directive) {
 	select {
 	case <-ch:
@@ -216,9 +206,7 @@ func (h *Hub) Peers() int {
 	return len(h.peers)
 }
 
-// Report builds an upstream report from rates: counts over [start, end],
-// summed across zones and relabelled with the given zone. keep filters
-// buckets; nil keeps all.
+// Report builds an upstream report from rates; nil keep keeps every bucket.
 func Report(nodeID, zone string, rates map[Key]Rate, start, end time.Time, keep func(bucket uint32) bool) *rlv1.UsageReport {
 	type bp struct {
 		bucket uint32

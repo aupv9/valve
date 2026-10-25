@@ -14,9 +14,7 @@ import (
 	rlv1 "github.com/aupv9/valve/gen/ratelimit/v1"
 )
 
-// LoadPaths loads and merges every policy file in paths. A directory
-// contributes its *.yaml and *.yml files. The merged set is validated as one,
-// so names and matches must be unique across files.
+// LoadPaths loads files and directories of policies and validates them as one set.
 func LoadPaths(paths ...string) (*File, error) {
 	var files []string
 	for _, p := range paths {
@@ -103,8 +101,7 @@ func reverse[K comparable, V comparable](m map[K]V, v V) K {
 	return zero
 }
 
-// ToProto converts a validated file into a PolicySet whose version is a hash
-// of its content, so identical policies always get the same version.
+// ToProto converts a validated file into a PolicySet versioned by content hash.
 func (pf *File) ToProto() *rlv1.PolicySet {
 	ps := &rlv1.PolicySet{}
 	for _, b := range pf.Buckets {
@@ -152,7 +149,7 @@ func Version(ps *rlv1.PolicySet) uint64 {
 func hashProto(m proto.Message) uint64 {
 	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(m)
 	if err != nil {
-		panic(err) // only plain generated messages are hashed
+		panic(err)
 	}
 	sum := sha256.Sum256(b)
 	return binary.BigEndian.Uint64(sum[:8])
