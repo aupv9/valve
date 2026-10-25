@@ -8,7 +8,8 @@ import (
 
 const shards = 16 // power of two
 
-// cache-line padded so shards updated by different cores don't false-share.
+// shard is padded to a cache line so shards updated by different cores don't
+// false-share.
 type shard struct {
 	n atomic.Uint64
 	_ [56]byte

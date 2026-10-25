@@ -3,8 +3,6 @@
 //	configurator validate <file|dir>...   check policies (CI runs this on every merge request)
 //	configurator serve [flags]             serve policies and the kill switch over xDS
 //	configurator envoy -service <name>     print Envoy config for one service's buckets
-//
-// TODO: simulate impact against the last 7 days of traffic.
 package main
 
 import (

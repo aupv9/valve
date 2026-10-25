@@ -2,7 +2,7 @@
 // aggregator, reports usage and applies drop ratios to a data plane.
 //
 //	-mode envoy      drive an Envoy sidecar: serve abort ratios over RTDS and
-//	                 read counters from its admin API (phase 1 of the rollout)
+//	                 read counters from its admin API
 //	-mode inprocess  decide in the agent's own filter; with -load-rps it
 //	                 generates synthetic traffic to exercise the loop locally
 package main

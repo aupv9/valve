@@ -27,7 +27,7 @@ func (Always) Run(ctx context.Context, lead func(ctx context.Context)) { lead(ct
 type Lease struct {
 	Client    kubernetes.Interface
 	Namespace string
-	Name      string // one lease per controller shard, e.g. valve-controller-0
+	Name      string // one lease per (tier, shard), e.g. valve-controller-regional-0
 	Identity  string // this replica, usually the pod name
 	Log       *slog.Logger
 

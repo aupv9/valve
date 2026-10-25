@@ -1,7 +1,7 @@
 // Package policy loads, validates and compiles rate-limit bucket policies.
 //
-// Policies live in Git as YAML (see policies/). The configurator compiles them
-// into a Table that the sidecar uses to match requests without re-parsing.
+// Policies live in Git as YAML (see policies/). Compile turns a validated set
+// into a Table that matches requests without re-parsing.
 package policy
 
 import (
@@ -105,7 +105,7 @@ func decode(r io.Reader) (*File, error) {
 }
 
 // Validate checks every bucket, applies defaults and assigns IDs.
-// New buckets default to shadow mode, per the rollout rules.
+// Buckets default to shadow mode.
 func (pf *File) Validate() error {
 	var errs []error
 	names := map[string]bool{}

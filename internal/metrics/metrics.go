@@ -1,7 +1,7 @@
 // Package metrics defines the Prometheus metrics of every Valve component.
 //
-// Rates from the design doc (offered_rps, allowed_rps, dropped_rps) are
-// exported as counters, per Prometheus convention; take rate() in queries.
+// Request rates are exported as counters, per Prometheus convention; take
+// rate() in queries.
 // Per-bucket gauges are published as a full snapshot each cycle, so a bucket
 // removed from the policy disappears instead of freezing at its last value.
 package metrics
@@ -90,7 +90,7 @@ func boolGauge(b bool) float64 {
 	return 0
 }
 
-// Agent metrics.
+// Agent holds the agent's metrics.
 type Agent struct {
 	*Common
 	Offered    *prometheus.CounterVec
@@ -152,7 +152,7 @@ func (a *Agent) Observe(detail []filter.TierUsage, lastDirective, now time.Time,
 	a.SetConfigVersion(version)
 }
 
-// Controller metrics.
+// Controller holds the controller's metrics.
 type Controller struct {
 	*Common
 	Leader     prometheus.Gauge
@@ -208,7 +208,7 @@ func (c *Controller) ObserveBuckets(shared []*rlv1.BucketDirective, byZone map[s
 	c.buckets.Set(ms)
 }
 
-// Aggregator metrics.
+// Aggregator holds the aggregator's metrics.
 type Aggregator struct {
 	Peers     prometheus.Gauge
 	Connected *prometheus.GaugeVec
@@ -225,7 +225,7 @@ func NewAggregator(reg prometheus.Registerer) *Aggregator {
 	return a
 }
 
-// Configurator metrics.
+// Configurator holds the configurator's metrics.
 type Configurator struct {
 	*Common
 	ReloadErrors prometheus.Counter

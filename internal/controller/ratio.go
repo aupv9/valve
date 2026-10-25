@@ -3,8 +3,8 @@ package controller
 
 import "math"
 
-// Params tune the feedback loop. The defaults are starting assumptions from
-// the design doc and must be validated with load tests.
+// Params tune the feedback loop. The defaults are starting points; tune them
+// with load tests.
 type Params struct {
 	Alpha      float64 // EWMA smoothing factor
 	Hysteresis float64 // start dropping only when R > L*(1+Hysteresis)

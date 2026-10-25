@@ -77,7 +77,7 @@ func (l *Loop) SetKillSwitch(on bool) {
 	l.mu.Unlock()
 }
 
-// Result is what one Tick computed, for tests and metrics.
+// Result is what one Tick computed.
 type Result struct {
 	Shared  []*rlv1.BucketDirective            // same for every zone
 	ByZone  map[string][]*rlv1.BucketDirective // zonal buckets
