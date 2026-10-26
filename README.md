@@ -27,7 +27,7 @@ The design follows [Uber's Global Rate Limiter (GRL)](https://www.uber.com/blog/
 
 ## Highlights
 
-- **Zero network calls per request.** The decision is an atomic load plus one random draw: about 17 ns/op with 0 allocations.
+- **Zero network calls per request.** The decision is an atomic load plus one random draw: about 18 ns/op with 0 allocations.
 - **Works with unmodified Envoy.** Ratios reach Envoy's fault filter over RTDS, and counters come from its admin API. No custom build is needed.
 - **Global, regional and zonal quotas.** A global tier sums every region. If it is lost, each region falls back to its traffic share of the limit.
 - **Priority tiers.** Under overload, low-priority traffic is shed first and high-priority traffic last.

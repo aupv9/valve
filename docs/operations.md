@@ -61,15 +61,16 @@ Thử kill switch: `curl -X PUT localhost:28080/kill-switch -d '{"enabled":true}
 
 ## Cờ dòng lệnh
 
-Cờ chung của mọi binary chạy lâu:
+Cờ dùng chung:
 
-| Cờ | Ý nghĩa |
-| --- | --- |
-| `-admin` | Địa chỉ HTTP cho `/metrics`, `/healthz`, `/readyz`; rỗng là tắt |
-| `-tls-cert`, `-tls-key`, `-tls-ca` | Bật mTLS; phải đủ cả ba |
-| `-tls-server-name` | Tên kiểm tra trong cert của server, khi khác host đang gọi |
-| `-xds` | Địa chỉ configurator; khi có, policy và kill switch lấy từ đây thay cho `-policy` |
-| `-interval` | Chu kỳ báo cáo/tính, mặc định `1s` |
+| Cờ | Có ở | Ý nghĩa |
+| --- | --- | --- |
+| `-admin` | controller, aggregator, agent, `configurator serve` | Địa chỉ HTTP cho `/metrics`, `/healthz`, `/readyz`; rỗng là tắt (trừ configurator, nơi nó còn phục vụ kill switch) |
+| `-tls-cert`, `-tls-key`, `-tls-ca` | controller, aggregator, agent, `configurator serve` | Bật mTLS; phải đủ cả ba |
+| `-tls-server-name` | như trên | Tên kiểm tra trong cert của server, khi khác host đang gọi |
+| `-xds` | controller, agent | Địa chỉ configurator; khi có, policy và kill switch lấy từ đây thay cho `-policy` |
+| `-policy` | controller, agent, `configurator serve`, `configurator envoy` | File hoặc thư mục policy, mặc định `policies` |
+| `-interval` | controller, aggregator, agent | Chu kỳ báo cáo/tính, mặc định `1s` |
 
 | Binary | Cờ | Mặc định | Ý nghĩa |
 | --- | --- | --- | --- |
@@ -103,6 +104,11 @@ Cờ chung của mọi binary chạy lâu:
 | | `-caller-header` | `x-valve-caller` | Header chứa tên caller |
 | | `-caller-spiffe` | `false` | Nhận caller theo service account SPIFFE trong `x-forwarded-client-cert` |
 | | `-retry-after` | `1` | Giá trị `Retry-After` (giây) trên 429 |
+| `loadgen` | `-url` | `http://localhost:10000/` | URL đích |
+| | `-rps` | `100` | Số request mỗi giây |
+| | `-H` | | Header dạng `name:value`, lặp lại được |
+| | `-duration` | `0` | Dừng sau khoảng này; 0 là chạy đến khi bị ngắt |
+| | `-label` | | Tên in ở đầu mỗi dòng |
 
 ## Viết policy
 

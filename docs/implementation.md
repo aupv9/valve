@@ -8,7 +8,7 @@ Mọi phần của thiết kế đã có code và đã chạy thử, trừ ba ph
 | --- | --- | --- |
 | Giao thức `RateLimitControl.Sync` | Xong; mở rộng tương thích ngược (window_start, priority, tier, kill switch, scope_offered_rps) | [`api/ratelimit/v1/ratelimit.proto`](../api/ratelimit/v1/ratelimit.proto) |
 | Policy YAML, validate, mặc định `shadow` | Xong; nhiều file trong một thư mục được validate như một tập | [`internal/policy`](../internal/policy) |
-| Hot path: match, đếm offered load, drop theo ratio | Xong (~17 ns/request, 0 alloc) | [`internal/filter`](../internal/filter/filter.go) |
+| Hot path: match, đếm offered load, drop theo ratio | Xong (~18 ns/request, 0 alloc) | [`internal/filter`](../internal/filter/filter.go) |
 | TTL chỉ thị, fail-open | Xong ở mọi tầng | `Filter.ExpireStale`, `envoy.DataPlane.ExpireStale`, [`internal/upstream/merge.go`](../internal/upstream/merge.go) |
 | EWMA, hysteresis, slew limit, clamp 0,9 | Xong | [`internal/controller/ratio.go`](../internal/controller/ratio.go) |
 | Shed theo priority tier | Xong: usage báo theo (bucket, tier), controller shed từ tier thấp lên | `BucketState.StepTiered`, filter theo tier |
@@ -56,6 +56,8 @@ Mỗi chu kỳ (mặc định 1 giây), usage đi lên và chỉ thị đi xuố
 | Quyết định | Giá trị | Lý do |
 | --- | --- | --- |
 | Đơn vị usage | Tốc độ: số đếm chia độ dài cửa sổ của chính báo cáo; mỗi node chỉ giữ báo cáo mới nhất | Báo cáo đến lệch chu kỳ hay bị mất không làm R dao động |
+| Báo cáo không hợp lệ | Bỏ báo cáo có cửa sổ rỗng hoặc cũ hơn báo cáo đã có của cùng node; bỏ node có báo cáo cũ hơn 3 chu kỳ | Không cộng số liệu cũ hay trùng |
+| Hysteresis | Chỉ bật drop khi R̂ > L × 1,05; khi đã drop thì dùng công thức thường và tự về 0 khi R̂ ≤ L | Không bật/tắt quanh ngưỡng, nhưng cũng không giữ drop khi đã hết quá tải |
 | Bucket ID | FNV-32a của `name` | Ổn định giữa các phiên bản và các tầng mà không cần registry; trùng hash bị từ chối |
 | Tên bucket | Chỉ `[A-Za-z0-9_-]`, tối đa 100 ký tự | Tên thành stat và runtime key của Envoy |
 | Phiên bản config | Hash nội dung của PolicySet | Cùng policy luôn cùng phiên bản trên mọi host; so sánh được qua `valve_config_info` |
@@ -66,18 +68,27 @@ Mỗi chu kỳ (mặc định 1 giây), usage đi lên và chỉ thị đi xuố
 | Leader election | Lease riêng cho mỗi (tầng, shard): `valve-controller-<tier>-<shard>` | Mỗi shard có leader riêng |
 | Chỉ leader báo lên global | Standby không gửi usage | Standby gửi số 0 cùng node id sẽ ghi đè số của leader |
 | Gộp chỉ thị từ nhiều shard | Mỗi nguồn chỉ được tính trong TTL của chính nó | Một shard im lặng không được các shard khác "làm mới" ratio cũ |
+| Peer chậm | Chỉ giữ chỉ thị mới nhất chưa gửi, không xếp hàng | Không gửi chỉ thị đã lỗi thời |
+| Peer mới kết nối | Gửi ngay báo cáo đầu tiên; phía trên trả ngay chỉ thị cuối cùng cho zone vừa báo | Không phải chờ một chu kỳ mới có ratio |
+| Hết hạn chỉ thị | Kiểm tra TTL trên ticker riêng, chạy cả khi mất kết nối tầng trên; hết hạn thì xoá luôn cờ kill switch đi kèm | Mất aggregator vẫn fail-open đúng hạn |
 | Kill switch | Hai nguồn OR với nhau: xDS (trực tiếp tới agent) và cờ trong chỉ thị | Vẫn tới được agent khi controller chết |
+| Kênh xDS | Policy và kill switch mỗi loại một stream ADS | Kill switch không phải chờ sau một bản policy lớn |
+| Khởi động configurator | Không chạy nếu bản policy đầu tiên không hợp lệ; về sau bản lỗi bị bỏ qua | Không bao giờ phát một tập policy rỗng hay hỏng |
+| xDS phía nhận | Bản lỗi bị NACK, giữ bản hợp lệ gần nhất; khi kết nối lại gửi kèm phiên bản đã ACK | Config lỗi không lan xuống data plane |
 | Envoy: ratio | Gửi dạng FractionalPercent `{numerator, denominator: MILLION}` | Envoy hiểu số nguyên trơn là phần trăm trên 100, và lớn hơn 100 là luôn abort |
-| Envoy: offered load | allowed / (1 − p) với p là ratio Envoy áp trong cửa sổ | Envoy chỉ đếm request tới router; p ≤ 0,9 nên ước lượng bị chặn |
+| Envoy: runtime layer | Phát layer `valve` ngay khi agent khởi động, kể cả khi rỗng | Envoy chờ mọi RTDS layer trước khi khởi tạo xong |
+| Envoy: shadow và kill switch | Đẩy ratio 0 xuống Envoy; số "lẽ ra bị drop" = offered × ratio của controller | Envoy không có chế độ shadow |
+| Envoy: offered load | allowed / (1 − p), với p là ratio cao nhất Envoy áp trong cửa sổ | Envoy chỉ đếm request tới router; lấy p cao nhất để không đếm thiếu khi ratio tăng giữa cửa sổ; p ≤ 0,9 nên ước lượng bị chặn |
 | Envoy: bucket chồng lấn | Bucket rộng loại trừ bucket hẹp bằng một matcher đảo nếu chỉ khác một chiều; khác hai chiều thì cảnh báo | Envoy không biểu diễn được "không phải (A và B)" |
 | TTL chỉ thị | 5 giây (`-ttl`) | Lớn hơn vài chu kỳ để chịu được một lần reconnect |
-| `Retry-After` | 1 giây, cố định | Bằng một chu kỳ điều khiển; sau đó drop ratio có thể đã đổi. Fault filter không thêm được header nên dùng `local_reply_config` |
+| `Retry-After` | 1 giây (`-retry-after`), qua `local_reply_config` cho phản hồi có response flag `FI` | Bằng một chu kỳ điều khiển. Fault filter không thêm được header; lọc theo `FI` để không đụng các phản hồi lỗi khác như 503 |
+| Xoay vòng cert | Đọc lại cert và key khi file đổi (kiểm tra mỗi 10 giây); đọc lỗi thì dùng tiếp cặp cũ | Cert đang được ghi dở không làm đứt kết nối |
 
 ## Kết quả đo được
 
 | Phép đo | Kết quả | So với yêu cầu |
 | --- | --- | --- |
-| `BenchmarkDecide`, song song, Apple Silicon | ~17 ns/op, 0 alloc | p99 < 100 µs |
+| `BenchmarkDecide`, song song, Apple Silicon | ~18 ns/op, 0 alloc | p99 < 100 µs |
 | In-process: 30k RPS vào limit 20k | Bắt đầu drop sau ~2–3 giây, ổn định ~20k sau ~5 giây | 1–3 giây đến lúc bắt đầu drop |
 | Hai region, mỗi bên 15k RPS, limit global 20k | Mỗi region ~10k allowed | Quota toàn cục |
 | Giết controller global | Mỗi region giữ ~10k (fallback theo tỷ trọng), không có đỉnh lọt qua | Giữ phần nào bảo vệ khi mất global |
@@ -95,4 +106,5 @@ Các số đo bằng `make bench`, chạy các binary trên một máy, và `mak
 - Ở chế độ Envoy, khi đổi bucket (thêm, xoá, đổi match) phải sinh lại cấu hình Envoy bằng `configurator envoy` và triển khai lại sidecar. Agent chỉ điều khiển ratio của các bucket đã có trong cấu hình Envoy.
 - Header caller (`x-valve-caller`) chỉ an toàn khi do gateway hoặc mesh đặt. Trong mesh có mTLS, dùng `-caller-spiffe`.
 - Kênh RTDS giữa agent và Envoy là plaintext trên loopback của pod.
+- Chế độ in-process không có `Retry-After`: filter chỉ trả verdict, không tự trả HTTP.
 - Cert CA (`-tls-ca`) chỉ được đọc lúc khởi động; cert và key thì tự nạp lại.
